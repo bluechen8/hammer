@@ -690,6 +690,9 @@ class SKY130Tech(HammerTechnology):
             ht.append(
                 "set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false"
             )
+            ht.append(
+                "set_db [get_db lib_cells -if {.base_name == ICGX1}] .dont_touch false"
+            )
             return True
 
         # The clock gating cell is set to don't touch/use in the cadence pdk (as of v0.0.3), work around that
