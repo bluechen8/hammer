@@ -1000,7 +1000,7 @@ set_db opt_fix_fanout_load true
 set_db opt_clock_gate_aware false
 set_db opt_area_recovery true
 set_db opt_post_route_area_reclaim setup_aware
-set_db opt_fix_hold_verbose true
+set_db opt_fix_hold_verbose false
 
 ##########################################################
 # Clock attributes  [get_db -category cts]
