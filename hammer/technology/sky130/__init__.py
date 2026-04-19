@@ -1097,6 +1097,7 @@ def set_cts_base_cells(ht: HammerTool) -> bool:
     ht.append(
         """
 set_db cts_buffer_cells {CLKBUFX2 CLKBUFX4 CLKBUFX8}
+set_db cts_inverter_cells {CLKINVX1 CLKINVX2 CLKINVX4 CLKINVX8}
 set_db cts_clock_gating_cells {ICGX1}
               """
     )
