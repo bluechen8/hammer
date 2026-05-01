@@ -1197,29 +1197,33 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                         orientation=orientation,
                         fixed=" -fixed" if constraint.create_physical else ""
                     ))
-                    spacing = self.get_setting("par.blockage_spacing")
-                    if constraint.top_layer is not None:
-                        current_top_layer = constraint.top_layer #  type: Optional[str]
-                    elif global_top_layer is not None:
-                        current_top_layer = global_top_layer
-                    else:
-                        current_top_layer = None
-                    if current_top_layer is not None:
-                        bot_layer = self.get_stackup().get_metal_by_index(1).name
-                        cover_layers = list(map(lambda m: m.name, self.get_stackup().get_metals_below_layer(current_top_layer)))
-                        output.append("create_route_halo -bottom_layer {b} -space {s} -top_layer {t} -inst {inst}".format(
-                            inst=new_path, b=bot_layer, t=current_top_layer, s=spacing))
-
-                        if(self.get_setting("par.power_to_route_blockage_ratio") < 1):
-                            self.logger.warning("The power strap blockage region is smaller than the routing halo region for hard macros. Double-check if this is intended.")
-
-                        place_push_out = round(spacing*self.get_setting("par.power_to_route_blockage_ratio") , 1) # Push the place halo, and therefore PG blockage, further out from route halo so router is aware of straps before entering final routing.
-
-                        output.append("create_place_halo -insts {inst} -halo_deltas {{{s} {s} {s} {s}}} -snap_to_site".format(
-                            inst=new_path, s=place_push_out))
-                        output.append("set pg_blockage_shape [get_db [get_db hinsts {inst}][get_db insts {inst}] .place_halo_polygon]".format(
-                            inst=new_path))
-                        output.append("create_route_blockage -pg_nets -layers {{{layers}}} -polygon $pg_blockage_shape".format(layers=" ".join(cover_layers)))
+                    # Halo / route-blockage emission disabled for this project:
+                    # SRAM met1/met2 access is managed by the sram_pin_escape hook
+                    # in example-vlsi-sky130, and per-macro halos caused unnecessary
+                    # blockages. Keep only place_inst above.
+                    # spacing = self.get_setting("par.blockage_spacing")
+                    # if constraint.top_layer is not None:
+                    #     current_top_layer = constraint.top_layer #  type: Optional[str]
+                    # elif global_top_layer is not None:
+                    #     current_top_layer = global_top_layer
+                    # else:
+                    #     current_top_layer = None
+                    # if current_top_layer is not None:
+                    #     bot_layer = self.get_stackup().get_metal_by_index(1).name
+                    #     cover_layers = list(map(lambda m: m.name, self.get_stackup().get_metals_below_layer(current_top_layer)))
+                    #     output.append("create_route_halo -bottom_layer {b} -space {s} -top_layer {t} -inst {inst}".format(
+                    #         inst=new_path, b=bot_layer, t=current_top_layer, s=spacing))
+                    #
+                    #     if(self.get_setting("par.power_to_route_blockage_ratio") < 1):
+                    #         self.logger.warning("The power strap blockage region is smaller than the routing halo region for hard macros. Double-check if this is intended.")
+                    #
+                    #     place_push_out = round(spacing*self.get_setting("par.power_to_route_blockage_ratio") , 1) # Push the place halo, and therefore PG blockage, further out from route halo so router is aware of straps before entering final routing.
+                    #
+                    #     output.append("create_place_halo -insts {inst} -halo_deltas {{{s} {s} {s} {s}}} -snap_to_site".format(
+                    #         inst=new_path, s=place_push_out))
+                    #     output.append("set pg_blockage_shape [get_db [get_db hinsts {inst}][get_db insts {inst}] .place_halo_polygon]".format(
+                    #         inst=new_path))
+                    #     output.append("create_route_blockage -pg_nets -layers {{{layers}}} -polygon $pg_blockage_shape".format(layers=" ".join(cover_layers)))
 
                 elif constraint.type == PlacementConstraintType.Obstruction:
                     obs_types = get_or_else(constraint.obs_types, [])  # type: List[ObstructionType]
