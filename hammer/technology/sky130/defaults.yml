@@ -42,6 +42,8 @@ technology.sky130:
 
   stdcell_library: "sky130_fd_sc_hd"  # Choose between "sky130_fd_sc_hd" (open-source) or "sky130_scl" (Cadence)
 
+  enable_li1_routing: false  # If true and stdcell_library == sky130_scl, patches the SCL tech LEF to declare li1 as a TYPE ROUTING layer
+
 # WARNING: BREAK GLASS flag to override tech collateral with the paths provided in `override_libraries`
 vlsi.technology.manually_override_pdk_collateral: false 
 vlsi.technology.override_libraries: [] # hacked collateral files to be used instead of default tech files with the same name
