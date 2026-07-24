@@ -659,13 +659,7 @@ class SKY130Tech(HammerTechnology):
                         == "sky130_scl"
                     ):
                         if line.strip() == "END poly":
-                            if self.get_setting("technology.sky130.enable_li1_routing"):
-                                df.write(_additional_tlef_edit_for_scl_routing_li1)
-                            else:
-                                df.write(_additional_tlef_edit_for_scl + _the_tlef_edit)
-                        elif line.strip() == "END met1":
-                            if self.get_setting("technology.sky130.enable_li1_routing"):
-                                df.write(_l1m1_via_rules_for_scl_routing_li1)
+                            df.write(_additional_tlef_edit_for_scl + _the_tlef_edit)
                     else:
                         if line.strip() == "END pwell":
                             df.write(_the_tlef_edit)
@@ -956,119 +950,6 @@ END pwell
 LAYER li1
   TYPE MASTERSLICE ;
 END li1
-"""
-_additional_tlef_edit_for_scl_routing_li1 = """
-LAYER nwell
-  TYPE MASTERSLICE ;
-END nwell
-LAYER pwell
-  TYPE MASTERSLICE ;
-END pwell
-LAYER AREAIDLD
-  TYPE MASTERSLICE ;
-END AREAIDLD
-LAYER licon
-  TYPE CUT ;
-END licon
-LAYER li1
-  TYPE ROUTING ;
-  DIRECTION VERTICAL ;
-  PITCH 0.48 ;
-  MINWIDTH 0.17 ;
-  WIDTH 0.17 ;          # LI 1
-  # SPACING  0.17 ;     # LI 2
-  SPACINGTABLE
-     PARALLELRUNLENGTH 0
-     WIDTH 0 0.17 ;
-  AREA 0.0561 ;         # LI 6
-  THICKNESS 0.1 ;
-  EDGECAPACITANCE 40.697E-6 ;
-  CAPACITANCE CPERSQDIST 36.9866E-6 ;
-  RESISTANCE RPERSQ 12.2 ;
-  ANTENNADIFFSIDEAREARATIO PWL ( ( 0 75 ) ( 0.0125 75 ) ( 0.0225 85.125 ) ( 22.5 10200 ) ) ;
-END li1
-"""
-
-# L1M1 (li1 <-> met1) via cells and VIARULE GENERATE rules. Inserted after
-# `END met1` in the cached tlef so that mcon/li1/met1 are all already declared
-# by the time the parser reads these. Skips the centered _PR_C variant which
-# the upstream tlef explicitly discourages.
-_l1m1_via_rules_for_scl_routing_li1 = """
-VIA L1M1_PR DEFAULT
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER li1 ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER met1 ;
-  RECT -0.145 -0.115 0.145 0.115 ;
-END L1M1_PR
-
-VIARULE L1M1_PR GENERATE
-  LAYER li1 ;
-  ENCLOSURE 0 0 ;
-  LAYER met1 ;
-  ENCLOSURE 0.06 0.03 ;
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  SPACING 0.36 BY 0.36 ;
-END L1M1_PR
-
-VIA L1M1_PR_R DEFAULT
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER li1 ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER met1 ;
-  RECT -0.115 -0.145 0.115 0.145 ;
-END L1M1_PR_R
-
-VIARULE L1M1_PR_R GENERATE
-  LAYER li1 ;
-  ENCLOSURE 0 0 ;
-  LAYER met1 ;
-  ENCLOSURE 0.03 0.06 ;
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  SPACING 0.36 BY 0.36 ;
-END L1M1_PR_R
-
-VIA L1M1_PR_M DEFAULT
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER li1 ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER met1 ;
-  RECT -0.115 -0.145 0.115 0.145 ;
-END L1M1_PR_M
-
-VIARULE L1M1_PR_M GENERATE
-  LAYER li1 ;
-  ENCLOSURE 0 0 ;
-  LAYER met1 ;
-  ENCLOSURE 0.03 0.06 ;
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  SPACING 0.36 BY 0.36 ;
-END L1M1_PR_M
-
-VIA L1M1_PR_MR DEFAULT
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER li1 ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  LAYER met1 ;
-  RECT -0.145 -0.115 0.145 0.115 ;
-END L1M1_PR_MR
-
-VIARULE L1M1_PR_MR GENERATE
-  LAYER li1 ;
-  ENCLOSURE 0 0 ;
-  LAYER met1 ;
-  ENCLOSURE 0.06 0.03 ;
-  LAYER mcon ;
-  RECT -0.085 -0.085 0.085 0.085 ;
-  SPACING 0.36 BY 0.36 ;
-END L1M1_PR_MR
 """
 
 LVS_DECK_INSERT_LINES = """

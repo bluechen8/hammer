@@ -33,8 +33,5 @@ technology.sky130:
   # Path to IO file
   io_file: str
 
-  # Choose between "sky130_fd_sc_hd" (open-source) or "sky130_scl" (Cadence)
+  # Choose between "sky130_fd_sc_hd" (open-source) or "sky130_scl" (Cadence) 
   stdcell_library: str
-
-  # Promote li1 to a TYPE ROUTING layer in the patched SCL tech LEF (sky130_scl only)
-  enable_li1_routing: bool
