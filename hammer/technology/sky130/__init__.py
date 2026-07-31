@@ -2,28 +2,605 @@
 #
 #  See LICENSE for licence details.
 
-import sys
-import re
-import os, shutil
-from pathlib import Path
-from typing import NamedTuple, List, Optional, Tuple, Dict, Set, Any
+import functools
 import importlib
 import importlib.resources
 import json
+import os
+import re
+import shutil
+from pathlib import Path
+from typing import List
 
-import hammer.tech
-from hammer.tech import HammerTechnology
-from hammer.vlsi import HammerTool, HammerPlaceAndRouteTool, TCLTool, HammerDRCTool, HammerLVSTool, \
-    HammerToolHookAction, HierarchicalMode
-
-import hammer.tech.specialcells as specialcells
+from hammer.tech import (
+    Corner,
+    Decimal,
+    DRCDeck,
+    HammerTechnology,
+    Library,
+    LVSDeck,
+    Metal,
+    PathPrefix,
+    Provide,
+    Site,
+    Stackup,
+    Supplies,
+    TechConfig,
+)
 from hammer.tech.specialcells import CellType, SpecialCell
+from hammer.utils import LEFUtils
+from hammer.vlsi import (
+    HammerDRCTool,
+    HammerLVSTool,
+    HammerPlaceAndRouteTool,
+    HammerTool,
+    HammerToolHookAction,
+    HierarchicalMode,
+    TCLTool,
+)
+
+from hammer.tech.specialcells import CellType, SpecialCell
+
+from hammer.utils import LEFUtils
+from hammer.vlsi import (
+    HammerDRCTool,
+    HammerLVSTool,
+    HammerPlaceAndRouteTool,
+    HammerTool,
+    HammerToolHookAction,
+    HierarchicalMode,
+    TCLTool,
+)
 
 class SKY130Tech(HammerTechnology):
     """
     Override the HammerTechnology used in `hammer_tech.py`
     This class is loaded by function `load_from_json`, and will pass the `try` in `importlib`.
     """
+    
+    def gen_config(self) -> None:
+        """Generate the tech config, based on the library type selected"""
+        
+        slib = self.get_setting("technology.sky130.stdcell_library")
+        SKY130A = self.get_setting("technology.sky130.sky130A") if slib == "sky130_fd_sc_hd" else ""
+        SKY130_CDS = self.get_setting("technology.sky130.sky130_cds") if slib == "sky130_scl" else ""
+        SKY130_SCL = self.get_setting("technology.sky130.sky130_scl")
+        SRAM22 = self.get_setting("technology.sky130.sram22_sky130_macros")
+        
+        SKY130_IO = self.get_setting("technology.sky130.io_periphery_cells") # TODO(jimfang) make it so that users dont need to install entire openPDKs just for the IO cells... thisi may mean republishing the IO cells (after the installer's ef_io io cells modification) at a github location... for now, we depend on SKY130A (open pdks) even for the CDNS std cell flow...
+        
+        # Common tech LEF and IO cell spice netlists
+        libs = []
+        if slib == "sky130_fd_sc_hd":
+            libs += [
+                Library(
+                    lef_file=os.path.join(
+                        SKY130A,
+                        "libs.ref/sky130_fd_sc_hd/techlef/sky130_fd_sc_hd__nom.tlef",
+                    ),
+                    verilog_sim=os.path.join(
+                        SKY130A, "libs.ref/sky130_fd_sc_hd/verilog/primitives.v"
+                    ),
+                    provides=[Provide(lib_type="technology")],
+                ),
+            ]
+        elif slib == "sky130_scl":
+            libs += [
+                Library(
+                    lef_file=os.path.join(SKY130_SCL, "sky130_scl_9T_tech/lef/sky130_scl_9T.tlef"),
+                    verilog_sim=os.path.join(SKY130_SCL, "sky130_scl_9T/verilog/sky130_scl_9T.v"),
+                    provides=[Provide(lib_type="technology")],
+                ),
+            ]
+            libs += [
+                Library(
+                    lef_file=os.path.join(SKY130_SCL, "sky130_scl_9T_tech/lef/sky130_scl_9T_phyCells.lef"),
+                    provides=[Provide(lib_type="technology")],
+                ),
+            ]
+        else:
+            raise ValueError(f"Incorrect standard cell library selection: {slib}")
+        
+        
+        # Use SRAM22
+        libs += [
+                Library(
+                    spice_file=os.path.join(
+                        SRAM22,
+                        "sram22.spice",
+                    ),
+                    provides=[Provide(lib_type="technology")],
+                ),
+        ]
+        
+        # Stdcell library-dependent lists
+        stackups = []  # type: List[Stackup]
+        phys_only = []  # type: List[Cell]
+        dont_use = []  # type: List[Cell]
+        spcl_cells = []  # type: List[SpecialCell]
+        
+        # base path -> list of corners
+        lib_corner_files = {}
+        
+        if slib == "sky130_fd_sc_hd":
+            phys_only = [
+                "sky130_fd_sc_hd__tap_1",
+                "sky130_fd_sc_hd__tap_2",
+                "sky130_fd_sc_hd__tapvgnd_1",
+                "sky130_fd_sc_hd__tapvpwrvgnd_1",
+                "sky130_fd_sc_hd__fill_1",
+                "sky130_fd_sc_hd__fill_2",
+                "sky130_fd_sc_hd__fill_4",
+                "sky130_fd_sc_hd__fill_8",
+                "sky130_fd_sc_hd__diode_2",
+                # TODO(jimfang) is this everything? are decaps not included?
+            ]
+            
+            dont_use = [
+                "*sdf*",
+                "sky130_fd_sc_hd__probe_p_*",
+                "sky130_fd_sc_hd__probec_p_*",
+            ]
+            
+            spcl_cells = [
+                # for now, skipping the tiecell step. I think the extracted verilog netlist is ignoring the tiecells which is causing lvs issues
+                # TODO(jimfang) is this during extraction of verilog after par? or something done here/hacked up here? sometimes lvs doesn't fully include phycells.. is this is misconfig of some kind?
+                SpecialCell(
+                    cell_type=CellType("tiehilocell"), name=["sky130_fd_sc_hd__conb_1"]
+                ),
+                SpecialCell(
+                    cell_type=CellType("tiehicell"),
+                    name=["sky130_fd_sc_hd__conb_1"],
+                    output_ports=["HI"],
+                ),
+                SpecialCell(
+                    cell_type=CellType("tielocell"),
+                    name=["sky130_fd_sc_hd__conb_1"],
+                    output_ports=["LO"],
+                ),
+                SpecialCell(
+                    cell_type=CellType("endcap"), name=["sky130_fd_sc_hd__tap_1"]
+                ),
+                SpecialCell(
+                    cell_type=CellType("tapcell"),
+                    name=["sky130_fd_sc_hd__tapvpwrvgnd_1"],
+                ),
+                SpecialCell(
+                    cell_type=CellType("stdfiller"),
+                    name=[
+                        "sky130_fd_sc_hd__fill_1",
+                        "sky130_fd_sc_hd__fill_2",
+                        "sky130_fd_sc_hd__fill_4",
+                        "sky130_fd_sc_hd__fill_8",
+                    ],
+                ),
+                SpecialCell(
+                    cell_type=CellType("decap"),
+                    name=[
+                        "sky130_fd_sc_hd__decap_3",
+                        "sky130_fd_sc_hd__decap_4",
+                        "sky130_fd_sc_hd__decap_6",
+                        "sky130_fd_sc_hd__decap_8",
+                        "sky130_fd_sc_hd__decap_12",
+                    ],
+                ),
+                SpecialCell(
+                    cell_type=CellType("driver"),
+                    name=["sky130_fd_sc_hd__buf_4"],
+                    input_ports=["A"],
+                    output_ports=["X"],
+                ),
+                # this breaks synthesis with a complaint about "Cannot perform synthesis because libraries do not have usable inverters." from Genus.
+                # note that innovus still recognizes and uses this cell as a buffer
+                # TODO(jimfang) https://github.com/ucb-bar/hammer/blob/516aedb55385e9e3d9237738db5c8c2978e6475c/hammer/synthesis/genus/__init__.py#L337 - wrong tcl call for newer innovus versions?
+                SpecialCell(
+                    cell_type=CellType("ctsbuffer"), name=["sky130_fd_sc_hd__clkbuf_1"]
+                ),
+                
+                # TODO(jimfang) below newly added
+                SpecialCell(
+                    cell_type=CellType("ctsinverter"),
+                    name=[
+                        "sky130_fd_sc_hd__clkinv_1",
+                        "sky130_fd_sc_hd__clkinv_2",
+                        "sky130_fd_sc_hd__clkinv_4",
+                        "sky130_fd_sc_hd__clkinv_8",
+                        "sky130_fd_sc_hd__clkinv_16"
+                    ]
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("ctsgate"),
+                    name=[
+                        "sky130_fd_sc_hd__dlclkp_1",
+                        "sky130_fd_sc_hd__dlclkp_2",
+                        "sky130_fd_sc_hd__dlclkp_4"
+                    ]
+                )
+            ]
+
+            # Generate standard cell library
+            library = slib
+            
+            # TODO(jimfang) - i dont think this is needed?
+            # # scl vs 130a have different site names
+            # sites = None
+            
+            # grab corners
+            STDCELL_LIBRARY_BASE_PATH = os.path.join(SKY130A, "libs.ref", library)
+            lib_corner_files[STDCELL_LIBRARY_BASE_PATH] = os.listdir(
+                os.path.join(STDCELL_LIBRARY_BASE_PATH, "lib")
+            )
+            lib_corner_files[STDCELL_LIBRARY_BASE_PATH].sort()
+            
+            
+            tlef_path = os.path.join(
+                SKY130A, "libs.ref", library, "techlef", f"{library}__min.tlef"
+            )
+            metals = list(
+                map(lambda m: Metal.model_validate(m), LEFUtils.get_metals(tlef_path))
+            )
+            stackups.append(
+                Stackup(name=slib, grid_unit=Decimal("0.001"), metals=metals)
+            )
+
+            sites = [
+                Site(name="unithd", x=Decimal("0.46"), y=Decimal("2.72")),
+                Site(name="unithddbl", x=Decimal("0.46"), y=Decimal("5.44")),
+            ]
+            lvs_decks = [
+                # sky130A uses NDA-ed or Cadence LVS decks as Hammer doesn't have klayout LVS support as of July 2026
+                LVSDeck(
+                    tool_name="calibre",
+                    deck_name="calibre_lvs",
+                    path="$SKY130_NDA/s8/V2.0.1/LVS/Calibre/lvsRules_s8",
+                ),
+                LVSDeck(
+                    tool_name="pegasus",
+                    deck_name="pegasus_lvs",
+                    path="$SKY130_CDS/Sky130_LVS/sky130.lvs.pvl",
+                ),
+            ]
+            drc_decks = [
+                DRCDeck(
+                    tool_name="calibre",
+                    deck_name="calibre_drc",
+                    path="$SKY130_NDA/s8/V2.0.1/DRC/Calibre/s8_drcRules",
+                ),
+                DRCDeck(
+                    tool_name="klayout",
+                    deck_name="klayout_drc",
+                    path="$SKY130A/libs.tech/klayout/drc/sky130A.lydrc",
+                ),
+                DRCDeck(
+                    tool_name="pegasus",
+                    deck_name="pegasus_drc",
+                    path="$SKY130_CDS/Sky130_DRC/sky130_rev_0.0_2.2.drc.pvl",
+                ),
+            ]
+        
+        elif slib == "sky130_scl":
+            # cadence standard cells & PDK do not provide IO cells; we'll use IO cells provided here: https://github.com/fossi-foundation/skywater-pdk-libs-sky130_fd_io
+            
+            phys_only = [
+                
+            ]
+            
+            dont_use = [
+                
+            ]
+            
+            spcl_cells = [
+                SpecialCell(
+                    cell_type=CellType("tiehicell"), name=["TIEHI"], input_ports=["Y"]
+                ),
+                SpecialCell(
+                    cell_type=CellType("tielocell"), name=["TIELO"], input_ports=["Y"]
+                ),
+                # cadence sky130 std cells don't have a endcap TODO(jimfang) is this intended?
+                # cadnece sky130 std cells contain taps by default (not a tapless design unlike the sky130A cells)
+                
+                # TODO(jimfang) below newly added
+                SpecialCell(
+                    cell_type=CellType("stdfiller"),
+                    name=[
+                        "FILL1",
+                        "FILL2",
+                        "FILL4",
+                        "FILL8",
+                        "FILL16",
+                        "FILL32",
+                        "FILL64",
+                    ],
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("decap"),
+                    name=[
+                        "FILL_DECAP8",
+                        "FILL_DECAP16",
+                    ],
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("driver"),
+                    name=[
+                        "BUFX2",
+                        "BUFX4",
+                        "BUFX8",
+                        "BUFX16",
+                    ],
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("ctsbuffer"), name=[
+                        "CLKBUFX2",
+                        "CLKBUFX4",
+                        "CLKBUFX8"
+                    ]
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("ctsinverter"), name=[
+                        "CLKINVX1",
+                        "CLKINVX2",
+                        "CLKINVX4",
+                        "CLKINVX8",
+                    ]
+                ),
+                
+                SpecialCell(
+                    cell_type=CellType("ctsgate"), name=[
+                        "ICGX1"
+                    ]
+                ),
+                
+            ]
+            
+            
+            # Generate standard cell library
+            library = slib
+            
+            # grab corbers
+            STDCELL_LIBRARY_BASE_PATH = os.path.join(SKY130_SCL, "sky130_scl_9T")
+            lib_corner_files[STDCELL_LIBRARY_BASE_PATH] = os.listdir(
+                os.path.join(STDCELL_LIBRARY_BASE_PATH, "lib")
+            )
+            lib_corner_files[STDCELL_LIBRARY_BASE_PATH].sort()
+            
+            # Generate stackup
+            metals = []  # type: List[Metal]
+
+            tlef_path = os.path.join(SKY130_SCL, "sky130_scl_9T_tech", "lef", f"{slib}_9T.tlef")
+            metals = list(
+                map(lambda m: Metal.model_validate(m), LEFUtils.get_metals(tlef_path))
+            )
+            stackups.append(
+                Stackup(name=slib, grid_unit=Decimal("0.001"), metals=metals)
+            )
+
+            sites = [
+                Site(name="CoreSite", x=Decimal("0.46"), y=Decimal("4.14")),
+                Site(name="IOSite", x=Decimal("1.0"), y=Decimal("240.0")),
+                Site(name="CornerSite", x=Decimal("240.0"), y=Decimal("240.0")),
+            ]
+
+            lvs_decks = [
+                LVSDeck(
+                    tool_name="pegasus",
+                    deck_name="pegasus_lvs",
+                    path=os.path.join(SKY130_CDS, "Sky130_LVS", "sky130.lvs.v0.0_1.1.pvl"),
+                )
+            ]
+            drc_decks = [
+                DRCDeck(
+                    tool_name="calibre",
+                    deck_name="calibre_drc",
+                    path="$SKY130_NDA/s8/V2.0.1/DRC/Calibre/s8_drcRules",
+                ),
+                DRCDeck(
+                    tool_name="pegasus",
+                    deck_name="pegasus_drc",
+                    path=os.path.join(
+                        SKY130_CDS, "Sky130_DRC", "sky130_rev_0.0_2.12.drc.pvl"
+                    ),
+                ),
+            ]
+        
+        else:
+            raise ValueError(f"Incorrect standard cell library selection: {slib}")
+        
+        
+        # add skywater io cells to corners
+        io_library_base_path = os.path.join(SKY130A, "libs.ref", "sky130_fd_io") # TODO(jimfang) see commentary near SKY130_IO variable definition
+        if os.path.exists(io_library_base_path):
+            lib_corner_files[io_library_base_path] = os.listdir(
+                os.path.join(io_library_base_path, "lib")
+            )
+        
+        # process corners & register them w/ hammer
+        for library_base_path, cornerfiles in lib_corner_files.items():
+            for cornerfilename in cornerfiles:
+                if "sky130" not in cornerfilename or "#" in cornerfilename:
+                    # cadence doesn't use the lib name in their corner libs
+                    # also skip random temp files sometimes included in sky130_scl
+                    continue
+                if "ccsnoise" in cornerfilename:
+                    continue  # ignore duplicate corner.lib/corner_ccsnoise.lib files
+
+                tmp = cornerfilename.replace(".lib", "").strip("_nldm")
+                if tmp + "_ccsnoise.lib" in lib_corner_files:
+                    cornerfilename = (
+                        tmp + "_ccsnoise.lib"
+                    )  # use ccsnoise version of lib file
+                    
+                
+                if "sky130_fd_io" in library_base_path: # ex: /home/ff/ee198/ee198-20/sky130_col/open_pdks-2022.10/share/pdk/sky130A/libs.ref/sky130_fd_io/lib
+                    # these are seperate from the io gds
+                    # the story is:
+                    # sky130_fd_io is the skywater provided base I/O library
+                    # sky130_ef_io is the efabless/open_pdks (== sky130A) addendum, which does the following:
+                        # (1) Changes the orientation of the corner pad from upper-right to
+                        #     lower-left with a wrapper cell called "sky130_fd_io__corner_pad".  Also
+                        #     extends the power buses to make the dimensions of the corner pad
+                        #     multiples of 1um.
+                        #
+                        # (2) Adds a 1um-wide spacer cell to complement the existing 5um-wide
+                        #     spacer cell.
+                        #
+                        # (3) Adds wrappers for all the combinations of power pad base cell +
+                        #     power pad overlay, to create all 12 combinations, for pads with
+                        #     either high- or low-voltage clamps, connecting to one of the six
+                        #     power domains vddio, vdda, vccd, vssio, vssa, or vssd.
+                        #
+                        # (4) Fix a DRC error in the SkyWater GPIO pad layout
+                        #
+                        # Source: https://github.com/fossi-foundation/open-pdks/tree/main/sky130/custom/sky130_fd_io
+                    # sky130_ef_io instantiates/uses the underlying sky130_fd_io collateral (https://github.com/fossi-foundation/skywater-pdk-libs-sky130_fd_io), which depends on the primative devices library (https://github.com/fossi-foundation/skywater-pdk-libs-sky130_fd_pr)
+                    # therefore, in order to use these IO cells, at least the above 2 should be installed. As a safety, we should just install all of OpenPDKs
+                    
+                    extra_gds_files = [
+                        "sky130_ef_io__analog.gds",
+                        "sky130_ef_io__disconnect_vccd_slice_5um.gds",
+                        "sky130_ef_io__gpiov2_pad_wrapped.gds",
+                        "sky130_ef_io__bare_pad.gds",
+                        "sky130_ef_io__disconnect_vdda_slice_5um.gds",
+                        "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um.gds",
+                        "sky130_ef_io.gds",
+                    ]
+                    
+                    for extra_gds_file in extra_gds_files:
+                        lib_entry = Library(
+                            nldm_liberty_file=os.path.join(
+                                library_base_path, "lib", cornerfilename
+                            ),
+                            verilog_sim=os.path.join(
+                                SKY130_SCL,
+                                "sky130_scl_9T",
+                                "verilog",
+                                library + "_9T.v" if slib == "sky130_scl" else ".v",
+                            ),
+                            lef_file=os.path.join(
+                                library_base_path, "lef", library + ".lef"
+                            ),
+                            spice_file=netlist_path,
+                            gds_file=os.path.join(
+                                library_base_path, "gds", extra_gds_file
+                            ),
+                            corner=Corner(nmos=speed, pmos=speed, temperature=temp),
+                            supplies=Supplies(VDD=vdd, GND="0 V"),
+                            provides=[Provide(lib_type="stdcell", vt="RVT")],
+                        )
+                        libs.append(lib_entry)
+
+                # different naming conventions; needed here for the skywater IO cells
+                if "sky130A" in library_base_path:
+                    split_cell_corner = re.split("_(ff)|_(ss)|_(tt)", tmp)
+                    cell_name = split_cell_corner[0]
+                    library = tmp.split("__")[0]
+                    process = split_cell_corner[1:-1]
+                    temp_volt = split_cell_corner[-1].split("_")[1:]
+
+                    # Filter out cross corners (e.g ff_ss or ss_ff)
+                    if len(process) > 3:
+                        if not functools.reduce(
+                            lambda x, y: x and y,
+                            map(lambda p, q: p == q, process[0:3], process[4:]),
+                            True,
+                        ):
+                            continue
+                    # Determine actual corner
+                    speed = next(c for c in process if c is not None).replace("_", "")
+                    temp = temp_volt[0]
+                    temp = temp.replace("n", "-")
+                    temp = temp.split("C")[0] + " C"
+
+                    vdd = (".").join(temp_volt[1].split("v")) + " V"
+                    if speed == "ff":
+                        speed = "fast"
+                    elif speed == "tt":
+                        speed = "typical"
+                    elif speed == "ss":
+                        speed = "slow"
+                    else:
+                        self.logger.info(
+                            "Skipping lib with unsupported corner: {}".format(speed)
+                        )
+                        continue
+                else:
+                    library = "sky130_scl_9T"
+                    _, speed, vdd, temp, _ = tmp.split("_")
+
+                    # force equivalent operating conditions for speed, since they're different between sky130a and scl
+                    # this is needed unless someone regenerates lib characterization for the IO cells at the cadence corners
+                    if speed == "ff":
+                        temp = "-40 C"
+                        vdd = "1.95 V"
+                        speed = "fast"
+                    if speed == "tt":
+                        vdd = "1.80 V"
+                        temp = "25 C"
+                        speed = "typical"
+                    if speed == "ss":
+                        vdd = "1.60 V"
+                        speed = "slow"
+                        temp = "100 C"
+
+                cdl_path = os.path.join(library_base_path, "cdl", library + ".cdl")
+                spice_path = os.path.join(
+                    library_base_path, "spice", library + ".spice"
+                )
+
+                # just prioritize spice, arbitrary choice
+                # assert not (os.path.exists(cdl_path) and os.path.exists(spice_path)), "both spice and cdl netlists exist! this is ambiguous :("
+                netlist_path = spice_path if os.path.exists(spice_path) else cdl_path
+
+                lib_entry = Library(
+                    nldm_liberty_file=os.path.join(
+                        library_base_path, "lib", cornerfilename
+                    ),
+                    verilog_sim=os.path.join(
+                        SKY130_SCL,
+                        "sky130_scl_9T",
+                        "verilog",
+                        library + "_9T.v" if slib == "sky130_scl" else ".v",
+                    ),
+                    lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
+                    spice_file=netlist_path,
+                    gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
+                    corner=Corner(nmos=speed, pmos=speed, temperature=temp),
+                    supplies=Supplies(VDD=vdd, GND="0 V"),
+                    provides=[Provide(lib_type="stdcell", vt="RVT")],
+                )
+                libs.append(lib_entry)
+
+        self.config = TechConfig(
+            name="Skywater 130nm Library",
+            grid_unit="0.001",
+            shrink_factor=None,
+            installs=[
+                PathPrefix(id="$SKY130_NDA", path="technology.sky130.sky130_nda"),
+                PathPrefix(id="$SKY130A", path="technology.sky130.sky130A"),
+                PathPrefix(id="$SKY130_CDS", path="technology.sky130.sky130_cds"),
+                PathPrefix(id="$SKY130_SCL", path="technology.sky130.sky130_scl"),
+            ],
+            libraries=libs,
+            gds_map_file="sky130_lefpin.map",
+            physical_only_cells_list=phys_only,
+            dont_use_list=dont_use,
+            additional_drc_text="",
+            lvs_decks=lvs_decks,
+            drc_decks=drc_decks,
+            additional_lvs_text="",
+            tarballs=None,
+            sites=sites,
+            stackups=stackups,
+            special_cells=spcl_cells,
+            extra_prefixes=None,
+        )
+
+        
+    
     def post_install_script(self) -> None:
         self.library_name = 'sky130_fd_sc_hd'
         # check whether variables were overriden to point to a valid path
