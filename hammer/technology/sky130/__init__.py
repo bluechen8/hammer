@@ -25,7 +25,7 @@ from hammer.tech import (
     Site,
     Stackup,
     Supplies,
-    TechConfig,
+    TechJSON,
 )
 from hammer.tech.specialcells import CellType, SpecialCell
 from hammer.utils import LEFUtils
@@ -62,8 +62,8 @@ class SKY130Tech(HammerTechnology):
         """Generate the tech config, based on the library type selected"""
         
         slib = self.get_setting("technology.sky130.stdcell_library")
-        SKY130A = self.get_setting("technology.sky130.sky130A") if slib == "sky130_fd_sc_hd" else ""
-        SKY130_CDS = self.get_setting("technology.sky130.sky130_cds") if slib == "sky130_scl" else ""
+        SKY130A = self.get_setting("technology.sky130.sky130A")
+        SKY130_CDS = self.get_setting("technology.sky130.sky130_cds")
         SKY130_SCL = self.get_setting("technology.sky130.sky130_scl")
         SRAM22 = self.get_setting("technology.sky130.sram22_sky130_macros")
         
@@ -124,16 +124,20 @@ class SKY130Tech(HammerTechnology):
         
         if slib == "sky130_fd_sc_hd":
             phys_only = [
-                "sky130_fd_sc_hd__tap_1",
-                "sky130_fd_sc_hd__tap_2",
-                "sky130_fd_sc_hd__tapvgnd_1",
-                "sky130_fd_sc_hd__tapvpwrvgnd_1",
                 "sky130_fd_sc_hd__fill_1",
                 "sky130_fd_sc_hd__fill_2",
                 "sky130_fd_sc_hd__fill_4",
                 "sky130_fd_sc_hd__fill_8",
+                "sky130_fd_sc_hd__decap_3",
+                "sky130_fd_sc_hd__decap_4",
+                "sky130_fd_sc_hd__decap_6",
+                "sky130_fd_sc_hd__decap_8",
+                "sky130_fd_sc_hd__decap_12",
+                "sky130_fd_sc_hd__tap_1",
+                "sky130_fd_sc_hd__tap_2",
+                "sky130_fd_sc_hd__tapvgnd_1",
+                "sky130_fd_sc_hd__tapvpwrvgnd_1",
                 "sky130_fd_sc_hd__diode_2",
-                # TODO(jimfang) is this everything? are decaps not included?
             ]
             
             dont_use = [
@@ -163,9 +167,12 @@ class SKY130Tech(HammerTechnology):
                 ),
                 SpecialCell(
                     cell_type=CellType("tapcell"),
-                    name=["sky130_fd_sc_hd__tapvpwrvgnd_1"],
+                    name=["sky130_fd_sc_hd__tapvgnd_1", "sky130_fd_sc_hd__tapvpwrvgnd_1"],
                 ),
                 SpecialCell(
+                    # sky130_ef_sc_hd__fill_4 etc also exist; we don't use them; this is intentional.
+                    # If you are running into LI density (too much) errors, consider using the sky130_ef_sc_hd__ cells
+                    # see: https://github.com/fossi-foundation/open-pdks/tree/main/sky130/custom/sky130_fd_sc_hd#readme
                     cell_type=CellType("stdfiller"),
                     name=[
                         "sky130_fd_sc_hd__fill_1",
@@ -280,10 +287,19 @@ class SKY130Tech(HammerTechnology):
             ]
         
         elif slib == "sky130_scl":
-            # cadence standard cells & PDK do not provide IO cells; we'll use IO cells provided here: https://github.com/fossi-foundation/skywater-pdk-libs-sky130_fd_io
+            # cadence standard cells & PDK do not provide IO cells; we'll use IO cells provided here: https://github.com/fossi-foundation/open-pdks/tree/main/sky130 -- see notes at line `if "sky130_fd_io" in library_base_path:`
             
             phys_only = [
-                
+                "FILL1",
+                "FILL2",
+                "FILL4",
+                "FILL8",
+                "FILL16",
+                "FILL32",
+                "FILL64",
+                "FILL_DECAP8",
+                "FILL_DECAP16",
+                "ANTENNA"              
             ]
             
             dont_use = [
@@ -361,7 +377,8 @@ class SKY130Tech(HammerTechnology):
             # Generate standard cell library
             library = slib
             
-            # grab corbers
+            # grab corners
+            # TODO(jimfang) can this process a lib.gz directly or do we need to unzip it when installing the PDK?
             STDCELL_LIBRARY_BASE_PATH = os.path.join(SKY130_SCL, "sky130_scl_9T")
             lib_corner_files[STDCELL_LIBRARY_BASE_PATH] = os.listdir(
                 os.path.join(STDCELL_LIBRARY_BASE_PATH, "lib")
@@ -434,8 +451,109 @@ class SKY130Tech(HammerTechnology):
                         tmp + "_ccsnoise.lib"
                     )  # use ccsnoise version of lib file
                     
+
+                # keep this so that for fd_io, speed/temp/ is processed
+                if "sky130A" in library_base_path:
+                    split_cell_corner = re.split("_(ff)|_(ss)|_(tt)", tmp)
+                    cell_name = split_cell_corner[0]
+                    library = tmp.split("__")[0]
+                    process = split_cell_corner[1:-1]
+                    temp_volt = split_cell_corner[-1].split("_")[1:]
+
+                    # Filter out cross corners (e.g ff_ss or ss_ff)
+                    # ignores lib files that has mixed corners such as _ff_ss; if file name is _ss_ss or __tt_tt, reduces to ss or tt.
+                    if len(process) > 3:
+                        if not functools.reduce(
+                            lambda x, y: x and y,
+                            map(lambda p, q: p == q, process[0:3], process[4:]),
+                            True,
+                        ):
+                            continue
+                    # Determine actual corner
+                    speed = next(c for c in process if c is not None).replace("_", "")
+                    temp = temp_volt[0]
+                    temp = temp.replace("n", "-")
+                    temp = temp.split("C")[0] + " C"
+
+                    vdd = (".").join(temp_volt[1].split("v")) + " V"
+                    if speed == "ff":
+                        speed = "fast"
+                    elif speed == "tt":
+                        speed = "typical"
+                    elif speed == "ss":
+                        speed = "slow"
+                    else:
+                        self.logger.info(
+                            "Skipping lib with unsupported corner: {}".format(speed)
+                        )
+                        continue
+                else: 
+                    library = "sky130_scl_9T" # TODO(jimfang) support other variants (compact/high speed) of the cdns 9T std cell lib
+                    _, speed, vdd, temp, _ = tmp.split("_")
+
+                    # force equivalent operating conditions for speed, since they're different between sky130a and scl
+                    # this is needed unless someone regenerates lib characterization for the IO cells at the cadence corners
+                    if speed == "ff":
+                        temp = "-40 C"
+                        vdd = "1.95 V"
+                        speed = "fast"
+                    if speed == "tt":
+                        vdd = "1.80 V"
+                        temp = "25 C"
+                        speed = "typical"
+                    if speed == "ss":
+                        vdd = "1.60 V"
+                        speed = "slow"
+                        temp = "100 C"
+
+                cdl_path = os.path.join(library_base_path, "cdl", library + ".cdl")
+                spice_path = os.path.join(
+                    library_base_path, "spice", library + ".spice"
+                )
+
+                # just prioritize spice, arbitrary choice
+                # assert not (os.path.exists(cdl_path) and os.path.exists(spice_path)), "both spice and cdl netlists exist! this is ambiguous :("
+                netlist_path = spice_path if os.path.exists(spice_path) else cdl_path
+
+                if slib == "sky130_fd_sc_hd": 
+                    lib_entry = Library(
+                        nldm_liberty_file=os.path.join(
+                            library_base_path, "lib", cornerfilename
+                        ),
+                        verilog_sim=os.path.join(
+                            library_base_path,
+                            "verilog",
+                            library + ".v" # sky130_fd_sc_hd.v
+                        ),
+                        lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
+                        spice_file=netlist_path,
+                        gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
+                        corner=Corner(nmos=speed, pmos=speed, temperature=temp),
+                        supplies=Supplies(VDD=vdd, GND="0 V"),
+                        provides=[Provide(lib_type="stdcell", vt="RVT")], # RVT = SVT
+                    )
+                    libs.append(lib_entry)
+                    
+                elif slib == "sky130_scl":
+                    lib_entry = Library(
+                        nldm_liberty_file=os.path.join(
+                            library_base_path, "lib", cornerfilename
+                        ),
+                        verilog_sim=os.path.join(
+                            library_base_path,
+                            "verilog",
+                            library + ".v" # sky130_scl_9T.v
+                        ),
+                        lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
+                        spice_file=netlist_path,
+                        gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
+                        corner=Corner(nmos=speed, pmos=speed, temperature=temp),
+                        supplies=Supplies(VDD=vdd, GND="0 V"),
+                        provides=[Provide(lib_type="stdcell", vt="RVT")], # RVT = SVT
+                    )
+                    libs.append(lib_entry)
                 
-                if "sky130_fd_io" in library_base_path: # ex: /home/ff/ee198/ee198-20/sky130_col/open_pdks-2022.10/share/pdk/sky130A/libs.ref/sky130_fd_io/lib
+                if "sky130_fd_io" in library_base_path: # ex: /scratch/jfx/open-pdks/sky130/sky130A/libs.ref/sky130_fd_io
                     # these are seperate from the io gds
                     # the story is:
                     # sky130_fd_io is the skywater provided base I/O library
@@ -466,115 +584,55 @@ class SKY130Tech(HammerTechnology):
                         "sky130_ef_io__bare_pad.gds",
                         "sky130_ef_io__disconnect_vdda_slice_5um.gds",
                         "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um.gds",
+                        "sky130_ef_io__connect_vdda_vddio_and_vssa_vssio_slice_20um.gds",
                         "sky130_ef_io.gds",
                     ]
                     
                     for extra_gds_file in extra_gds_files:
                         lib_entry = Library(
                             nldm_liberty_file=os.path.join(
-                                library_base_path, "lib", cornerfilename
+                                io_library_base_path, "lib", cornerfilename # TODO(jimfang) this as far as i can tell imports all avail lib files under sky130_fd_io... is this going to cause conflicts?
                             ),
                             verilog_sim=os.path.join(
-                                SKY130_SCL,
-                                "sky130_scl_9T",
+                                io_library_base_path,
                                 "verilog",
-                                library + "_9T.v" if slib == "sky130_scl" else ".v",
+                                "sky130_fd_io.v"
                             ),
                             lef_file=os.path.join(
-                                library_base_path, "lef", library + ".lef"
+                                io_library_base_path, "lef", "sky130_fd_io.lef"
                             ),
-                            spice_file=netlist_path,
+                            spice_file=os.path.join(io_library_base_path, "spice", "sky130_fd_io.spice"),
                             gds_file=os.path.join(
-                                library_base_path, "gds", extra_gds_file
+                                io_library_base_path, "gds", extra_gds_file
                             ),
                             corner=Corner(nmos=speed, pmos=speed, temperature=temp),
                             supplies=Supplies(VDD=vdd, GND="0 V"),
-                            provides=[Provide(lib_type="stdcell", vt="RVT")],
+                            provides=[Provide(lib_type="iocell", vt="RVT")],
                         )
                         libs.append(lib_entry)
+                        
+                    # add ef_io cell's lef files (one time is enough since this isn't specific to the particular gds)
+                    lib_entry = Library(
+                        lef_file=os.path.join(
+                            io_library_base_path, "lef", "sky130_ef_io.lef"
+                        ),
+                        provides=[Provide(lib_type="iocell", vt="RVT")],
+                    )
+                    libs.append(lib_entry)
+        
+        if slib == "sky130_fd_sc_hd":
+            # add primitives.v which sky130_fd_sc_hd depends on (once only since it only needs to be included once to be able to be referenced)
+            lib_entry = Library(
+                verilog_sim=os.path.join(
+                    library_base_path,
+                    "verilog",
+                    "primitives.v" # /open-pdks/sky130/sky130A/libs.ref/sky130_fd_sc_hd/verilog/primitives.v
+                ),
+                provides=[Provide(lib_type="stdcell", vt="RVT")], # RVT = SVT
+            )
+            libs.append(lib_entry)
 
-                # different naming conventions; needed here for the skywater IO cells
-                if "sky130A" in library_base_path:
-                    split_cell_corner = re.split("_(ff)|_(ss)|_(tt)", tmp)
-                    cell_name = split_cell_corner[0]
-                    library = tmp.split("__")[0]
-                    process = split_cell_corner[1:-1]
-                    temp_volt = split_cell_corner[-1].split("_")[1:]
-
-                    # Filter out cross corners (e.g ff_ss or ss_ff)
-                    if len(process) > 3:
-                        if not functools.reduce(
-                            lambda x, y: x and y,
-                            map(lambda p, q: p == q, process[0:3], process[4:]),
-                            True,
-                        ):
-                            continue
-                    # Determine actual corner
-                    speed = next(c for c in process if c is not None).replace("_", "")
-                    temp = temp_volt[0]
-                    temp = temp.replace("n", "-")
-                    temp = temp.split("C")[0] + " C"
-
-                    vdd = (".").join(temp_volt[1].split("v")) + " V"
-                    if speed == "ff":
-                        speed = "fast"
-                    elif speed == "tt":
-                        speed = "typical"
-                    elif speed == "ss":
-                        speed = "slow"
-                    else:
-                        self.logger.info(
-                            "Skipping lib with unsupported corner: {}".format(speed)
-                        )
-                        continue
-                else:
-                    library = "sky130_scl_9T"
-                    _, speed, vdd, temp, _ = tmp.split("_")
-
-                    # force equivalent operating conditions for speed, since they're different between sky130a and scl
-                    # this is needed unless someone regenerates lib characterization for the IO cells at the cadence corners
-                    if speed == "ff":
-                        temp = "-40 C"
-                        vdd = "1.95 V"
-                        speed = "fast"
-                    if speed == "tt":
-                        vdd = "1.80 V"
-                        temp = "25 C"
-                        speed = "typical"
-                    if speed == "ss":
-                        vdd = "1.60 V"
-                        speed = "slow"
-                        temp = "100 C"
-
-                cdl_path = os.path.join(library_base_path, "cdl", library + ".cdl")
-                spice_path = os.path.join(
-                    library_base_path, "spice", library + ".spice"
-                )
-
-                # just prioritize spice, arbitrary choice
-                # assert not (os.path.exists(cdl_path) and os.path.exists(spice_path)), "both spice and cdl netlists exist! this is ambiguous :("
-                netlist_path = spice_path if os.path.exists(spice_path) else cdl_path
-
-                lib_entry = Library(
-                    nldm_liberty_file=os.path.join(
-                        library_base_path, "lib", cornerfilename
-                    ),
-                    verilog_sim=os.path.join(
-                        SKY130_SCL,
-                        "sky130_scl_9T",
-                        "verilog",
-                        library + "_9T.v" if slib == "sky130_scl" else ".v",
-                    ),
-                    lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
-                    spice_file=netlist_path,
-                    gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
-                    corner=Corner(nmos=speed, pmos=speed, temperature=temp),
-                    supplies=Supplies(VDD=vdd, GND="0 V"),
-                    provides=[Provide(lib_type="stdcell", vt="RVT")],
-                )
-                libs.append(lib_entry)
-
-        self.config = TechConfig(
+        self.config = TechJSON(
             name="Skywater 130nm Library",
             grid_unit="0.001",
             shrink_factor=None,
