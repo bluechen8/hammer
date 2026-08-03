@@ -158,7 +158,7 @@ class HammerDriver:
         tech.logger = self.log.context("tech")
         tech.set_database(self.database)
         tech.cache_dir = cache_dir
-        tech.get_config()
+        tech.gen_config()
         if tech.config is None:
             self.log.fatal("Technology {0} config not generated or missing .tech.[json/yml]!".format(tech_module))
             return
