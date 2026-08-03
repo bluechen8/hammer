@@ -376,8 +376,8 @@ class HammerTechnology:
         elif tech_yaml.is_file():
             tech.config = TechJSON.model_validate_json(json.dumps(load_yaml(tech_yaml.read_text())))
             return tech
-        else: #TODO - from Pydantic model instance
-            return None
+        else: # Assume tech implents gen_config()
+            return tech
 
     def get_lib_units(self) -> None:
         """
@@ -415,6 +415,12 @@ class HammerTechnology:
         except KeyError as e:  # this function is expected to return Optional[str] from extracted_tarballs_dir()
             print(e)  # TODO: fix the root cause
             return None
+    
+    def set_setting(self, key: str, value: Any) -> None:
+        """
+        Set a runtime setting in the database.
+        """
+        self._database.set_setting(key, value)
 
     def get_setting_suffix(self, key: str) -> Any:
         """Get a particular setting from the database with a suffix.

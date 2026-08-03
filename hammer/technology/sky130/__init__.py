@@ -657,269 +657,327 @@ class SKY130Tech(HammerTechnology):
             extra_prefixes=None,
         )
 
+        self.library_name = slib
         
     
     def post_install_script(self) -> None:
-        self.library_name = 'sky130_fd_sc_hd'
         # check whether variables were overriden to point to a valid path
-        self.use_sram22 = os.path.exists(self.get_setting("technology.sky130.sram22_sky130_macros"))
-        self.setup_cdl()
-        self.setup_verilog()
+        if self.get_setting("technology.sky130.stdcell_library") == "sky130_fd_sc_hd":
+            self.setup_cdl()
+            self.setup_verilog()
         self.setup_techlef()
         self.setup_io_lefs()
+        self.setup_calibre_lvs_decks() # TODO(jimfang) impl
+        self.setup_hvl_ls_lef()
         self.logger.info('Loaded Sky130 Tech')
 
 
     def setup_cdl(self) -> None:
-        ''' Copy and hack the cdl, replacing pfet_01v8_hvt/nfet_01v8 with
-            respective names in LVS deck
-        '''
+        """Copy and hack the cdl, replacing pfet_01v8_hvt/nfet_01v8 with
+        respective names in LVS deck
+        """
         setting_dir = self.get_setting("technology.sky130.sky130A")
         setting_dir = Path(setting_dir)
-        source_path = setting_dir / 'libs.ref' / self.library_name / 'cdl' / f'{self.library_name}.cdl'
+        source_path = (
+            setting_dir
+            / "libs.ref"
+            / self.library_name
+            / "cdl"
+            / f"{self.library_name}.cdl"
+        )
         if not source_path.exists():
             raise FileNotFoundError(f"CDL not found: {source_path}")
 
         cache_tech_dir_path = Path(self.cache_dir)
         os.makedirs(cache_tech_dir_path, exist_ok=True)
-        dest_path = cache_tech_dir_path / f'{self.library_name}.cdl'
+        dest_path = cache_tech_dir_path / f"{self.library_name}.cdl"
 
         # device names expected in LVS decks
-        pmos = 'pfet_01v8_hvt'
-        nmos = 'nfet_01v8'
-        if (self.get_setting('vlsi.core.lvs_tool') == "hammer.lvs.calibre"):
-            pmos = 'phighvt'
-            nmos = 'nshort'
-        elif (self.get_setting('vlsi.core.lvs_tool') == "hammer.lvs.netgen"):
-            pmos = 'sky130_fd_pr__pfet_01v8_hvt'
-            nmos = 'sky130_fd_pr__nfet_01v8'
+        if self.get_setting("vlsi.core.lvs_tool") == "hammer.lvs.calibre":
+            pmos = "phighvt"
+            nmos = "nshort"
+        elif self.get_setting("vlsi.core.lvs_tool") == "hammer.lvs.pegasus":
+            pmos = "pfet_01v8_hvt"
+            nmos = "nfet_01v8"
+        elif self.get_setting("vlsi.core.lvs_tool") == "hammer.lvs.netgen":
+            pmos = "sky130_fd_pr__pfet_01v8_hvt"
+            nmos = "sky130_fd_pr__nfet_01v8"
+        else:
+            shutil.copy2(source_path, dest_path)
+            return
 
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                self.logger.info("Modifying CDL netlist: {} -> {}".format
-                    (source_path, dest_path))
+        with open(source_path, "r") as sf:
+            with open(dest_path, "w") as df:
+                self.logger.info(
+                    "Modifying CDL netlist: {} -> {}".format(source_path, dest_path)
+                )
                 df.write("*.SCALE MICRON\n")
                 for line in sf:
-                    line = line.replace('pfet_01v8_hvt', pmos)
-                    line = line.replace('nfet_01v8'    , nmos)
+                    line = line.replace("pfet_01v8_hvt", pmos)
+                    line = line.replace("nfet_01v8", nmos)
                     df.write(line)
 
     # Copy and hack the verilog
-    #   - <library_name>.v: remove 'wire 1' and one endif line to fix syntax errors
     #   - primitives.v: set default nettype to 'wire' instead of 'none'
     #           (the open-source RTL sim tools don't treat undeclared signals as errors)
-    #   - Deal with numerous inconsistencies in timing specify blocks.
     def setup_verilog(self) -> None:
         setting_dir = self.get_setting("technology.sky130.sky130A")
         setting_dir = Path(setting_dir)
-
-        # <library_name>.v
-        source_path = setting_dir / 'libs.ref' / self.library_name / 'verilog' / f'{self.library_name}.v'
-        if not source_path.exists():
-            raise FileNotFoundError(f"Verilog not found: {source_path}")
-
-        cache_tech_dir_path = Path(self.cache_dir)
-        os.makedirs(cache_tech_dir_path, exist_ok=True)
-        dest_path = cache_tech_dir_path / f'{self.library_name}.v'
-
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                self.logger.info("Modifying Verilog netlist: {} -> {}".format
-                    (source_path, dest_path))
-                for line in sf:
-                    line = line.replace('wire 1','// wire 1')
-                    line = line.replace('`endif SKY130_FD_SC_HD__LPFLOW_BLEEDER_FUNCTIONAL_V','`endif // SKY130_FD_SC_HD__LPFLOW_BLEEDER_FUNCTIONAL_V')
-                    df.write(line)
-                    
-        # Additionally hack out the specifies
-        sl = []
-        with open(dest_path, 'r') as df:
-            sl = df.readlines()
-
-        # Find timing declaration
-        idxs = [idx for idx, line in enumerate(sl) if "`ifndef SKY130_FD_SC_HD__LPFLOW_BLEEDER_1_TIMING_V" in line]
-        if len(idxs) > 0:
-            start_idx = idxs[0]
-
-            # Search for the broken statement
-            search_range = range(start_idx+1, len(sl))
-            broken_specify_idx = len(sl)-1
-            broken_substr = "(SHORT => VPWR) = (0:0:0,0:0:0,0:0:0,0:0:0,0:0:0,0:0:0);"
-
-            broken_specify_idx = [idx for idx in search_range if broken_substr in sl[idx]][0]
-            endif_idx = [idx for idx in search_range if "`endif" in sl[idx]][0]
-
-            # Now, delete all the specify statements if specify exists before an endif.
-            if broken_specify_idx < endif_idx:
-                self.logger.info("Removing incorrectly formed specify block.")
-                cell_def_range = range(start_idx+1, endif_idx)
-                start_specify_idx = [idx for idx in cell_def_range if "specify" in sl[idx]][0]
-                end_specify_idx = [idx for idx in cell_def_range if "endspecify" in sl[idx]][0]
-                sl[start_specify_idx:end_specify_idx+1] = [] # Dice
-
-        # Deal with the nonexistent net tactfully (don't code in brittle replacements)
-        self.logger.info("Fixing broken net references with select specify blocks.")
-        pattern = r"^\s*wire SLEEP.*B.*delayed;"
-        capture_pattern = r".*(SLEEP.*?B.*?delayed).*"
-        pattern_idx = [(idx, re.findall(capture_pattern, value)[0]) for idx, value in enumerate(sl) if re.search(pattern, value)]
-        for list_idx, pattern_tuple in enumerate(pattern_idx):
-            if list_idx != len(pattern_idx)-1:
-                search_range = range(pattern_tuple[0]+1, pattern_idx[list_idx+1][0])
-            else: 
-                search_range = range(pattern_tuple[0]+1, len(sl))
-            for idx in search_range:
-                list = re.findall(capture_pattern, sl[idx])
-                for elem in list:
-                    if elem != pattern_tuple[1]:
-                        sl[idx] = sl[idx].replace(elem, pattern_tuple[1])
-                        self.logger.info(f"Incorrect reference `{elem}` to be replaced with: `{pattern_tuple[1]}` on raw line {idx}.")
-                    
-        # Write back into destination 
-        with open(dest_path, 'w') as df:
-            df.writelines(sl)
-
+        
         # primitives.v
-        source_path = setting_dir / 'libs.ref' / self.library_name / 'verilog' / 'primitives.v'
+        source_path = (
+            setting_dir / "libs.ref" / self.library_name / "verilog" / "primitives.v"
+        )
         if not source_path.exists():
             raise FileNotFoundError(f"Verilog not found: {source_path}")
 
         cache_tech_dir_path = Path(self.cache_dir)
         os.makedirs(cache_tech_dir_path, exist_ok=True)
-        dest_path = cache_tech_dir_path / 'primitives.v'
+        dest_path = cache_tech_dir_path / "primitives.v"
 
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                self.logger.info("Modifying Verilog netlist: {} -> {}".format
-                    (source_path, dest_path))
+        with open(source_path, "r") as sf:
+            with open(dest_path, "w") as df:
+                self.logger.info(
+                    "Modifying Verilog netlist: {} -> {}".format(source_path, dest_path)
+                )
                 for line in sf:
-                    line = line.replace('`default_nettype none','`default_nettype wire')
+                    line = line.replace(
+                        "`default_nettype none", "`default_nettype wire"
+                    )
                     df.write(line)
 
     # Copy and hack the tech-lef, adding this very important `licon` section
+    # see comments near _additional_tlef_edit_for_scl section.
     def setup_techlef(self) -> None:
-        setting_dir = self.get_setting("technology.sky130.sky130A")
-        setting_dir = Path(setting_dir)
-        source_path = setting_dir / 'libs.ref' / self.library_name / 'techlef' / f'{self.library_name}__nom.tlef'
+        cache_tech_dir_path = Path(self.cache_dir)
+        os.makedirs(cache_tech_dir_path, exist_ok=True)
+        if self.get_setting("technology.sky130.stdcell_library") == "sky130_fd_sc_hd":
+            setting_dir = self.get_setting("technology.sky130.sky130A")
+            setting_dir = Path(setting_dir)
+            source_path = (
+                setting_dir
+                / "libs.ref"
+                / self.library_name
+                / "techlef"
+                / f"{self.library_name}__nom.tlef"
+            )
+            dest_path = cache_tech_dir_path / f"{self.library_name}__nom.tlef"
+        else:
+            setting_dir = self.get_setting("technology.sky130.sky130_scl")
+            setting_dir = Path(setting_dir)
+            source_path = setting_dir / "sky130_scl_9T_tech" /  "lef" / "sky130_scl_9T.tlef"
+            dest_path = cache_tech_dir_path / "sky130_scl_9T.tlef"
         if not source_path.exists():
             raise FileNotFoundError(f"Tech-LEF not found: {source_path}")
 
-        cache_tech_dir_path = Path(self.cache_dir)
-        os.makedirs(cache_tech_dir_path, exist_ok=True)
-        dest_path = cache_tech_dir_path / f'{self.library_name}__nom.tlef'
-
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                self.logger.info("Modifying Technology LEF: {} -> {}".format
-                    (source_path, dest_path))
+        with open(source_path, "r") as sf:
+            with open(dest_path, "w") as df:
+                self.logger.info(
+                    "Modifying Technology LEF: {} -> {}".format(source_path, dest_path)
+                )
                 for line in sf:
                     df.write(line)
-                    if line.strip() == 'END pwell':
-                        df.write(_the_tlef_edit)
+                    if (
+                        self.get_setting("technology.sky130.stdcell_library")
+                        == "sky130_scl"
+                    ):
+                        if line.strip() == "END poly":
+                            df.write(_additional_tlef_edit_for_scl)
 
-    # Power pins for clamps must be CLASS CORE
-    # connect/disconnect spacers must be CLASS PAD SPACER, not AREAIO
-    # Current version has two errors in MACRO class definitions that break lef parser.
+    # Power pins for clamps must be CLASS CORE - annotation is needed by innovus to mark the all clamp's met3 power port to be intended for core-side connection (as opposed to ring side -- which is inferred by innovus in absence of this annotation)
+    #     pad-ring side                         core side
+    #     VDDIO/VSSIO ring ── clamp ── VCCD1/VSSD1 tails
+    #     PORT                         PORT CLASS CORE
+    # connect/disconnect spacers must be CLASS PAD SPACER, not AREAIO - known bug, see some fixes already commited here: https://github.com/fossi-foundation/open-pdks/commit/d815bb30c9afdf9e264c276a8a2b533108dea3d0
+    # add ANTENNAGATEAREA 1.529 for met3 => total MOS gate-oxide area electrically connected to that PIN -- cannot confirm the source of 1.529 number.
     def setup_io_lefs(self) -> None:
-        sky130A_path = Path(self.get_setting('technology.sky130.sky130A'))
-        source_path = sky130A_path / 'libs.ref' / 'sky130_fd_io' / 'lef' / 'sky130_ef_io.lef'
+        sky130A_path = Path(self.get_setting("technology.sky130.sky130A"))
+        source_path = (
+            sky130A_path / "libs.ref" / "sky130_fd_io" / "lef" / "sky130_ef_io.lef"
+        )
         if not source_path.exists():
             raise FileNotFoundError(f"IO LEF not found: {source_path}")
 
         cache_tech_dir_path = Path(self.cache_dir)
         os.makedirs(cache_tech_dir_path, exist_ok=True)
-        dest_path = cache_tech_dir_path / 'sky130_ef_io.lef'
+        dest_path = cache_tech_dir_path / "sky130_ef_io.lef"
 
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                self.logger.info("Modifying IO LEF: {} -> {}".format
-                    (source_path, dest_path))
+        with open(source_path, "r") as sf:
+            with open(dest_path, "w") as df:
+                self.logger.info(
+                    "Modifying IO LEF: {} -> {}".format(source_path, dest_path)
+                )
                 sl = sf.readlines()
-                for net in ['VCCD1', 'VSSD1']:
-                    start = [idx for idx,line in enumerate(sl) if 'PIN ' + net in line]
-                    end = [idx for idx,line in enumerate(sl) if 'END ' + net in line]
+                for net in ["VCCD1", "VSSD1", "VDDA", "VSSA", "VSSIO"]:
+                    start = [idx for idx, line in enumerate(sl) if "PIN " + net in line]
+                    end = [idx for idx, line in enumerate(sl) if "END " + net in line]
                     intervals = zip(start, end)
                     for intv in intervals:
-                        port_idx = [idx for idx,line in enumerate(sl[intv[0]:intv[1]]) if 'PORT' in line]
+                        port_idx = [
+                            idx
+                            for idx, line in enumerate(sl[intv[0] : intv[1]])
+                            if "PORT" in line and "met3" in sl[intv[0] + idx + 1]
+                        ]
                         for idx in port_idx:
-                            sl[intv[0]+idx]=sl[intv[0]+idx].replace('PORT', 'PORT\n      CLASS CORE ;')
-                for cell in [
-                    'sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um',
-                    'sky130_ef_io__disconnect_vccd_slice_5um',
-                    'sky130_ef_io__disconnect_vdda_slice_5um',
+                            sl[intv[0] + idx] = sl[intv[0] + idx].replace(
+                                "PORT", "PORT\n      CLASS CORE ;"
+                            )
+                # force class to spacer
+                for macro_name in [
+                    "sky130_ef_io__disconnect_vccd_slice_5um",
+                    "sky130_ef_io__disconnect_vdda_slice_5um",
+                    "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um",
                 ]:
-                    # force class to spacer
-                    start = [idx for idx, line in enumerate(sl) if f'MACRO {cell}' in line]
-                    sl[start[0] + 1] = sl[start[0] + 1].replace('AREAIO', 'SPACER')
+                    start = [
+                        idx
+                        for idx, line in enumerate(sl)
+                        if f"MACRO {macro_name}" in line
+                    ]
+                    sl[start[0] + 1] = sl[start[0] + 1].replace("AREAIO", "SPACER")
 
-                # Current version has two one-off error that break lef parser.
-                self.logger.info("Fixing broken sky130_ef_io__analog_esd_pad LEF definition.")
-                start_broken_macro_list = ["MACRO sky130_ef_io__analog_esd_pad\n", "MACRO sky130_ef_io__analog_pad\n"]
-                end_broken_macro_list = ["END sky130_ef_io__analog_pad\n", "END sky130_ef_io__analog_noesd_pad\n"]
-                end_fixed_macro_list = ["END sky130_ef_io__analog_esd_pad\n", "END sky130_ef_io__analog_pad\n"]
+                for idx, line in enumerate(sl):
+                    if "PIN OUT" in line:
+                        sl[idx + 1].replace(
+                            "DIRECTION INPUT ;",
+                            "DIRECTION INPUT ;\n    ANTENNAGATEAREA 1.529 LAYER met3 ;",
+                        )
 
-                for start_broken_macro, end_broken_macro, end_fixed_macro in zip(start_broken_macro_list, end_broken_macro_list, end_fixed_macro_list):
-                    # Get all start indices to be checked
-                    start_check_indices = [idx for idx, line in enumerate(sl) if line == start_broken_macro]
-
-                    # Extract broken macro
-                    for idx_broken_macro in  start_check_indices:
-                        # Find the start of the next_macro
-                        idx_start_next_macro = [idx for idx in range(idx_broken_macro+1, len(sl)) if "MACRO" in sl[idx]][0]
-                        # Find the broken macro ending
-                        idx_end_broken_macro = len(sl)
-                        idxs = [idx for idx in range(idx_broken_macro+1, len(sl)) if end_broken_macro in sl[idx]]
-                        if len(idxs) == 0: continue
-                        idx_end_broken_macro = idxs[0]
-
-                        # Fix
-                        if idx_end_broken_macro < idx_start_next_macro:
-                            sl[idx_end_broken_macro] = end_fixed_macro
-                
                 df.writelines(sl)
+
+    def setup_hvl_ls_lef(self) -> bool:
+        # Treat HVL cells as if they were hard macros to avoid needing to set them
+        # up "properly" with multiple power domains
+        # does 2 things:
+        # strips "SITE unithv ;" across all cells/MACROs
+        # converts "CLASS CORE ;" -> "CLASS BLOCK ;" - hard macro each cell
+        
+        # iterating through all the cells is intentional, since recent PDK versions ship all the cells in 1 GDS file; if we only pulled out the level shifter lef into its own file, we would need to extract that 1 cell into a new GDS (would need to manually do this every PDK update, not sustainable).
+        # We can include all the HVL collateral, but will only instantiate the level shifter in the hammer design yaml.
+
+        lef_name = "sky130_fd_sc_hvl__lsbufhv2lv_1.lef"
+
+        sky130A_path = Path(self.get_setting("technology.sky130.sky130A"))
+        source_path = (
+            sky130A_path
+            / "libs.ref"
+            / "sky130_fd_sc_hvl"
+            / "lef"
+            / "sky130_fd_sc_hvl.lef"
+        )
+        cache_path = Path(self.cache_dir) / "fd_sc_hvl__lef" / lef_name # will be used in design.yaml & correlated to the sky130_fd_sc_hvl gds
+        cache_path.parent.mkdir(exist_ok=True)
+
+        with source_path.open("r") as sf, cache_path.open("w") as df:
+            self.logger.info(f"Patching HVL Level Shifter LEF: {source_path} -> {cache_path}")
+            is_in_site_def = False
+            is_in_macro_def = False
+            for line in sf:
+                if is_in_site_def:
+                    if "END unithv" in line:
+                        is_in_site_def = False
+                elif not is_in_macro_def and "SITE unithv" in line:
+                    is_in_site_def = True
+                elif "MACRO " in line:
+                    is_in_macro_def = True
+                    df.write(line)
+                elif "SITE unithv" in line:
+                    pass
+                else:
+                    df.write(
+                        line.replace("CLASS CORE", "CLASS BLOCK")
+                        if not (("ANTENNACELL" in line) or ("SPACER" in line))
+                        else line
+                    )
 
     def get_tech_par_hooks(self, tool_name: str) -> List[HammerToolHookAction]:
         hooks = {
             "innovus": [
-            HammerTool.make_post_insertion_hook("init_design",      sky130_innovus_settings),
-            HammerTool.make_pre_insertion_hook("place_tap_cells",   sky130_add_endcaps),
-            HammerTool.make_pre_insertion_hook("power_straps",      sky130_connect_nets),
-            HammerTool.make_pre_insertion_hook("write_design",      sky130_connect_nets2)
-            ]}
+                HammerTool.make_post_insertion_hook(
+                    "init_design", sky130_innovus_settings
+                ),
+                HammerTool.make_pre_insertion_hook("power_straps", sky130_connect_nets),
+                HammerTool.make_pre_insertion_hook(
+                    "write_design", sky130_connect_nets2
+                ),
+            ]
+        }
+        # there are no cap/decap cells in the cadence stdcell library as of version 0.0.3, so we can't do things that reference them
+        if self.get_setting("technology.sky130.stdcell_library") == "sky130_scl":
+            hooks["innovus"].extend(
+                [
+                    HammerTool.make_pre_insertion_hook(
+                        "power_straps", power_rail_straps_no_tapcells
+                    ),
+                    # TODO(jimfang) can we remove this now? if tools can recognize clock buffer cells
+                    # HammerTool.make_pre_insertion_hook(
+                    #     "clock_tree", set_cts_base_cells
+                    # ),
+                ]
+            )
+        else:
+            hooks["innovus"].append(
+                HammerTool.make_pre_insertion_hook(
+                    "place_tap_cells", sky130_add_endcaps
+                )
+            )
+
         return hooks.get(tool_name, [])
 
     def get_tech_drc_hooks(self, tool_name: str) -> List[HammerToolHookAction]:
         calibre_hooks = []
         pegasus_hooks = []
         if self.get_setting("technology.sky130.drc_blackbox_srams"):
-            calibre_hooks.append(HammerTool.make_post_insertion_hook("generate_drc_run_file", calibre_drc_blackbox_srams))
-            pegasus_hooks.append(HammerTool.make_post_insertion_hook("generate_drc_ctl_file", pegasus_drc_blackbox_srams))
-        hooks = {"calibre": calibre_hooks,
-                "pegasus": pegasus_hooks
-                 }
+            calibre_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_drc_run_file", calibre_drc_blackbox_srams
+                )
+            )
+            pegasus_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_drc_ctl_file", pegasus_drc_blackbox_srams
+                )
+            )
+        pegasus_hooks.append(
+            HammerTool.make_post_insertion_hook(
+                "generate_drc_ctl_file", pegasus_drc_blackbox_io_cells
+            )
+        )
+        hooks = {"calibre": calibre_hooks, "pegasus": pegasus_hooks}
         return hooks.get(tool_name, [])
 
     def get_tech_lvs_hooks(self, tool_name: str) -> List[HammerToolHookAction]:
-        calibre_hooks = [HammerTool.make_post_insertion_hook("generate_lvs_run_file", setup_calibre_lvs_deck)]
+        calibre_hooks = []
         pegasus_hooks = []
         if self.use_sram22:
-            calibre_hooks.append(HammerTool.make_post_insertion_hook("generate_lvs_run_file", sram22_lvs_recognize_gates_all))
+            calibre_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_lvs_run_file", sram22_lvs_recognize_gates_all
+                )
+            )
         if self.get_setting("technology.sky130.lvs_blackbox_srams"):
-            calibre_hooks.append(HammerTool.make_post_insertion_hook("generate_lvs_run_file", calibre_lvs_blackbox_srams))
-            pegasus_hooks.append(HammerTool.make_post_insertion_hook("generate_lvs_ctl_file", pegasus_lvs_blackbox_srams))
-        hooks = {"calibre": calibre_hooks,
-                "pegasus": pegasus_hooks
-                 }
+            calibre_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_lvs_run_file", calibre_lvs_blackbox_srams
+                )
+            )
+            pegasus_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_lvs_ctl_file", pegasus_lvs_blackbox_srams
+                )
+            )
+
+        if self.get_setting("technology.sky130.stdcell_library") == "sky130_scl":
+            pegasus_hooks.append(
+                HammerTool.make_post_insertion_hook(
+                    "generate_lvs_ctl_file", pegasus_lvs_add_130a_primitives
+                )
+            )
+        hooks = {"calibre": calibre_hooks, "pegasus": pegasus_hooks}
         return hooks.get(tool_name, [])
 
-    @staticmethod
-    def openram_sram_names() -> List[str]:
-        """ Return a list of cell-names of the OpenRAM SRAMs (that we'll use). """
-        return [
-            "sky130_sram_1kbyte_1rw1r_32x256_8",
-            "sky130_sram_1kbyte_1rw1r_8x1024_8",
-            "sky130_sram_2kbyte_1rw1r_32x512_8"
-        ]
+# =============================================================================================
 
+    # TODO(jimfang) these 2 are so hacked up...
     @staticmethod
     def sky130_sram_names() -> List[str]:
         sky130_sram_names = []
@@ -929,34 +987,52 @@ class SKY130Tech(HammerTechnology):
             sky130_sram_names.append(d['name'])
         return sky130_sram_names
 
+    @staticmethod
+    def sky130_sram_primitive_names() -> List[str]:
+        # TODO(jimfang) honestly should just include all fd_pr?
+        spice_filenames = [
+            "sky130_fd_pr__pfet_01v8",
+            "sky130_fd_pr__nfet_01v8",
+            "sky130_fd_pr__pfet_01v8_hvt",
+            "sky130_fd_pr__special_nfet_latch",
+            "sky130_fd_pr__special_nfet_pass",
+        ]  # "sky130_fd_pr__special_pfet_latch", ]
+        paths = []
+        for fname in spice_filenames:
+            paths.append(
+                f"""/tools/commercial/skywater/local/sky130A/libs.ref/sky130_fd_pr/spice/{
+                    fname
+                }.pm3.spice"""
+            )
+        # TODO: this is bc line 535 in the bwrc one causes a syntax error
+        # TODO(jimfang) maybe ask someone to fix it??
+        paths.append(
+            "/tools/C/elamdf/chipyard_dev/vlsi/sky130_fd_pr__special_pfet_latch.pm3.spice"
+        )
+        return paths
 
-_the_tlef_edit = '''
-LAYER licon
-  TYPE CUT ;
-END licon
-'''
-
+# =============================================================================================
+# =============================================================================================
 
 # various Innovus database settings
+# Innovus Stylus Common UI Text Command Reference 23.17
 def sky130_innovus_settings(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerPlaceAndRouteTool), "Innovus settings only for par"
     assert isinstance(ht, TCLTool), "innovus settings can only run on TCL tools"
     """Settings for every tool invocation"""
     ht.append(
-        '''
+        f"""
 
 ##########################################################
 # Placement attributes  [get_db -category place]
 ##########################################################
 #-------------------------------------------------------------------------------
-set_db place_global_place_io_pins  true
+set_db place_global_place_io_pins true
 
 set_db opt_honor_fences true
-set_db place_detail_dpt_flow true
-set_db place_detail_color_aware_legal true
-set_db place_global_solver_effort high
 set_db place_detail_check_cut_spacing true
 set_db place_global_cong_effort high
+set_db add_fillers_with_drc false
 
 ##########################################################
 # Optimization attributes  [get_db -category opt]
@@ -964,10 +1040,8 @@ set_db place_global_cong_effort high
 #-------------------------------------------------------------------------------
 
 set_db opt_fix_fanout_load true
-set_db opt_clock_gate_aware false
 set_db opt_area_recovery true
-set_db opt_post_route_area_reclaim setup_aware
-set_db opt_fix_hold_verbose true
+set_db opt_post_route_area_reclaim hold_and_setup_aware
 
 ##########################################################
 # Clock attributes  [get_db -category cts]
@@ -983,25 +1057,37 @@ set_db opt_hold_target_slack 0.10
 # Routing attributes  [get_db -category route]
 ##########################################################
 #-------------------------------------------------------------------------------
-set_db route_design_antenna_diode_insertion 1
-set_db route_design_antenna_cell_name "sky130_fd_sc_hd__diode_2"
+set_db route_antenna_diode_insertion true
+set_db route_antenna_cell_name "{"sky130_fd_sc_hd__diode_2" if ht.get_setting("technology.sky130.stdcell_library") == "sky130_fd_sc_hd" else "ANTENNA"}"
 
-set_db route_design_high_freq_search_repair true
-set_db route_design_detail_post_route_spread_wire true
-set_db route_design_with_si_driven true
-set_db route_design_with_timing_driven true
-set_db route_design_concurrent_minimize_via_count_effort high
+set_db route_high_freq_search_repair true
+set_db route_detail_post_route_spread_wire true
+set_db route_with_si_driven true
+set_db route_with_timing_driven true
+set_db route_concurrent_minimize_via_count_effort high
 set_db opt_consider_routing_congestion true
-set_db route_design_detail_use_multi_cut_via_effort medium
-    '''
+set_db route_detail_use_multi_cut_via_effort medium
+    """
     )
     if ht.hierarchical_mode in {HierarchicalMode.Top, HierarchicalMode.Flat}:
         ht.append(
-            '''
+            """
 # For top module: snap die to manufacturing grid, not placement grid
 set_db floorplan_snap_die_grid manufacturing
-        '''
+        """
         )
+
+        # ht.append(
+        #     """
+    # # note this is required for sky130_fd_sc_hd, the design has a ton of drcs if bottom layer is 1
+    # # TODO: why is setting routing_layer not enough?
+    # set_db design_bottom_routing_layer 2
+    # set_db design_top_routing_layer 6
+    # # deprected syntax, but this used to always work
+    # set_db route_design_bottom_routing_layer 2
+    #           """
+    # )
+
     return True
 
 def sky130_connect_nets(ht: HammerTool) -> bool:
@@ -1021,6 +1107,26 @@ def sky130_connect_nets2(ht: HammerTool) -> bool:
     return True
 
 
+def power_rail_straps_no_tapcells(ht: HammerTool) -> bool:
+    assert not ht.get_setting(
+        "par.generate_power_straps_options.by_tracks.generate_rail_layer"
+    ), """
+Rails must be placed by this hook for sky130_scl!
+Set par.generate_power_straps_options.by_tracks.generate_rail_layer: false"""
+    #  We do this since there are no explicit tapcells in sky130_scl
+    # just need the rail ones, others are placed as usual.
+    ht.append(
+        """
+# Power strap definition for layer met1 (rails):
+# should be .14
+set_db add_stripes_stacked_via_top_layer met1
+set_db add_stripes_stacked_via_bottom_layer met1
+set_db add_stripes_spacing_from_block 4.000
+add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none
+"""
+    )
+    return True
+
 def sky130_add_endcaps(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerPlaceAndRouteTool), "endcap insertion only for par"
     assert isinstance(ht, TCLTool), "endcap insertion can only run on TCL tools"
@@ -1034,49 +1140,6 @@ set_db add_endcaps_right_edge       {endcap_cell}
 add_endcaps
     '''
     )
-    return True
-
-def efabless_ring_io(ht: HammerTool) -> bool:
-    assert isinstance(ht, HammerPlaceAndRouteTool), "IO ring instantiation only for par"
-    assert isinstance(ht, TCLTool), "IO ring instantiation can only run on TCL tools"
-    io_file = ht.get_setting("technology.sky130.io_file")
-    ht.append(f"read_io_file {io_file} -no_die_size_adjust")
-    p_nets = list(map(lambda s: s.name, ht.get_independent_power_nets()))
-    g_nets = list(map(lambda s: s.name, ht.get_independent_ground_nets()))
-    ht.append(f'''
-# Global net connections
-connect_global_net VDDA -type pg_pin -pin_base_name VDDA -verbose
-connect_global_net VDDIO -type pg_pin -pin_base_name VDDIO* -verbose
-connect_global_net {p_nets[0]} -type pg_pin -pin_base_name VCCD* -verbose
-connect_global_net {p_nets[0]} -type pg_pin -pin_base_name VCCHIB -verbose
-connect_global_net {p_nets[0]} -type pg_pin -pin_base_name VSWITCH -verbose
-connect_global_net {g_nets[0]} -type pg_pin -pin_base_name VSSA -verbose
-connect_global_net {g_nets[0]} -type pg_pin -pin_base_name VSSIO* -verbose
-connect_global_net {g_nets[0]} -type pg_pin -pin_base_name VSSD* -verbose
-    ''')
-    ht.append('''
-# IO fillers
-set io_fillers {sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um sky130_ef_io__com_bus_slice_10um sky130_ef_io__com_bus_slice_5um sky130_ef_io__com_bus_slice_1um}
-add_io_fillers -prefix IO_FILLER -io_ring 1 -cells $io_fillers -side top -filler_orient r0
-add_io_fillers -prefix IO_FILLER -io_ring 1 -cells $io_fillers -side right -filler_orient r270
-add_io_fillers -prefix IO_FILLER -io_ring 1 -cells $io_fillers -side bottom -filler_orient r180
-add_io_fillers -prefix IO_FILLER -io_ring 1 -cells $io_fillers -side left -filler_orient r90
-# Fix placement
-set io_filler_insts [get_db insts IO_FILLER_*]
-set_db $io_filler_insts .place_status fixed
-    ''')
-    # An offset of 40um is used to place the core ring inside the core area. It
-    # can be decreased down to 5um as desired, but will require additional
-    # routing / settings to connect the core power stripes to the ring.
-    ht.append(f'''
-# Core ring
-add_rings -follow io -layer met5 -nets {{ {p_nets[0]} {g_nets[0]} }} -offset 40 -width 13 -spacing 3
-route_special -connect pad_pin -nets {{ {p_nets[0]} {g_nets[0]} }} -detailed_log
-    ''')
-    ht.append('''
-# Prevent buffering on TIE_LO_ESD and TIE_HI_ESD
-set_dont_touch [get_db [get_db pins -if {.name == *TIE*ESD}] .net]
-    ''')
     return True
 
 def calibre_drc_blackbox_srams(ht: HammerTool) -> bool:
@@ -1126,6 +1189,27 @@ def pegasus_lvs_blackbox_srams(ht: HammerTool) -> bool:
         f.write(fixed_contents)
     return True
 
+# required for sram22 since they use the 130a primiviites
+def pegasus_lvs_add_130a_primitives(ht: HammerTool) -> bool:
+    assert isinstance(ht, HammerLVSTool), "Blackbox and filter SRAMs only in LVS"
+    lvs_box = ""
+    for name in SKY130Tech.sky130_sram_primitive_names():
+        lvs_box += f"""\nschematic_path "{name}" spice;"""
+    # this is because otherwise lvs crashes with tons of stdcell-level pin mismatches
+    lvs_box += """\nlvs_inconsistent_reduction_threshold -none;"""
+    run_file = ht.lvs_ctl_file  # type: ignore
+    with open(run_file, "r+") as f:
+        # Remove SRAM SPICE file includes.
+        pattern = "schematic_path.*({}).*spice;\n".format(
+            "|".join(SKY130Tech.sky130_sram_primitive_names())
+        )
+        matcher = re.compile(pattern)
+        contents = f.read()
+        fixed_contents = contents + lvs_box
+        f.seek(0)
+        f.write(fixed_contents)
+    return True
+
 def sram22_lvs_recognize_gates_all(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerLVSTool), "Change 'LVS RECOGNIZE GATES' from 'NONE' to 'ALL' for SRAM22"
     run_file = ht.lvs_run_file  # type: ignore
@@ -1133,20 +1217,22 @@ def sram22_lvs_recognize_gates_all(ht: HammerTool) -> bool:
         f.write("LVS RECOGNIZE GATES ALL")
     return True
 
-
-LVS_DECK_SCRUB_LINES = [
-    "VIRTUAL CONNECT REPORT",
-    "SOURCE PRIMARY",
-    "SOURCE SYSTEM SPICE",
-    "SOURCE PATH",
-    "ERC",
-    "LVS REPORT"
-]
-
-LVS_DECK_INSERT_LINES = '''
-LVS FILTER D  OPEN  SOURCE
-LVS FILTER D  OPEN  LAYOUT
-'''
+# exclude sky130A IOs from pegasus for now
+# in theory IO cells should be DRC clean or all DRCs should be waiveable.
+def pegasus_drc_blackbox_io_cells(ht: HammerTool) -> bool:
+    assert isinstance(ht, HammerDRCTool) and ht.tool_config_prefix() == "drc.pegasus", (
+        "Exlude IOs only for Pegasus DRC"
+    )
+    drc_box = ""
+    io_cell_names = [
+        "sky130_ef_io__*"
+    ]  
+    for name in io_cell_names:
+        drc_box += f"\nexclude_cell {name}"
+    run_file = ht.drc_ctl_file  # type: ignore
+    with open(run_file, "a") as f:
+        f.write(drc_box)
+    return True
 
 def setup_calibre_lvs_deck(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerLVSTool), "Modify Calibre LVS deck for LVS only"
@@ -1178,5 +1264,42 @@ def setup_calibre_lvs_deck(ht: HammerTool) -> bool:
                 df.write(LVS_DECK_INSERT_LINES)
     return True
 
+# we need this because:
+# * (while cadence std cell ports are on M1), IO cells (openPDKs) ports are still on LI1
+# * we need to tell Innovus to see/be aware of the LI1 layer (since ports are on that layer), as opposed to abstracting it out (and only seeing met1 & above).
+# * not adding li1 as masterslice => openPDK io cell ports not being seen; if it is not set to a masterslice, Innovus will use LI1 as a routing layer, which will cause congestion + problems when other [cadence] cells' ports are on Met1.
+# * nwell & pwell are copied from sky130_fd_sc_hd__nom.tlef with the same argument
+
+# licon changes Needed in order to enforce the layer ordering in Innovus, otherwise may get error such as 
+# You need to have cut layer after layer 'pwell'.
+# broadly this is a repeat of information from the stackup image
+_additional_tlef_edit_for_scl = """
+LAYER nwell
+  TYPE MASTERSLICE ;
+END nwell
+LAYER pwell
+  TYPE MASTERSLICE ;
+END pwell
+LAYER li1
+  TYPE MASTERSLICE ;
+END li1ity
+LAYER licon
+  TYPE CUT ;
+END licon
+"""
+
+LVS_DECK_INSERT_LINES = """
+LVS FILTER D  OPEN  SOURCE
+LVS FILTER D  OPEN  LAYOUT
+"""
+
+LVS_DECK_SCRUB_LINES = [
+    "VIRTUAL CONNECT REPORT",
+    "SOURCE PRIMARY",
+    "SOURCE SYSTEM SPICE",
+    "SOURCE PATH",
+    "ERC",
+    "LVS REPORT",
+]
 
 tech = SKY130Tech()
