@@ -343,6 +343,14 @@ class SKY130Tech(HammerTechnology):
                     process = split_cell_corner[1:-1]
                     temp_volt = split_cell_corner[-1].split("_")[1:]
 
+                    # Skip libs with no recognizable timing corner (e.g.
+                    # sky130_ef_io__analog_stubs.lib), which have no ff/ss/tt token
+                    if not any(c is not None for c in process):
+                        self.logger.info(
+                            "Skipping lib with no timing corner: {}".format(tmp)
+                        )
+                        continue
+
                     # Filter out cross corners (e.g ff_ss or ss_ff)
                     if len(process) > 3:
                         if not functools.reduce(
