@@ -67,7 +67,7 @@ class SKY130Tech(HammerTechnology):
         SKY130_SCL = self.get_setting("technology.sky130.sky130_scl")
         SRAM22 = self.get_setting("technology.sky130.sram22_sky130_macros")
         
-        SKY130_IO = self.get_setting("technology.sky130.io_periphery_cells") # TODO(jimfang) make it so that users dont need to install entire openPDKs just for the IO cells... thisi may mean republishing the IO cells (after the installer's ef_io io cells modification) at a github location... for now, we depend on SKY130A (open pdks) even for the CDNS std cell flow...
+        # SKY130_IO = self.get_setting("technology.sky130.io_periphery_cells") # TODO(jimfang) make it so that users dont need to install entire openPDKs just for the IO cells... thisi may mean republishing the IO cells (after the installer's ef_io io cells modification) at a github location... for now, we depend on SKY130A (open pdks) even for the CDNS std cell flow...
         
         # Common tech LEF and IO cell spice netlists
         libs = []
@@ -460,6 +460,9 @@ class SKY130Tech(HammerTechnology):
                     process = split_cell_corner[1:-1]
                     temp_volt = split_cell_corner[-1].split("_")[1:]
 
+                    if not any(c is not None for c in process):
+                        continue
+
                     # Filter out cross corners (e.g ff_ss or ss_ff)
                     # ignores lib files that has mixed corners such as _ff_ss; if file name is _ss_ss or __tt_tt, reduces to ss or tt.
                     if len(process) > 3:
@@ -667,7 +670,7 @@ class SKY130Tech(HammerTechnology):
             self.setup_verilog()
         self.setup_techlef()
         self.setup_io_lefs()
-        self.setup_calibre_lvs_decks() # TODO(jimfang) impl
+        self.setup_calibre_lvs_deck()
         self.setup_hvl_ls_lef()
         self.logger.info('Loaded Sky130 Tech')
 
@@ -888,6 +891,38 @@ class SKY130Tech(HammerTechnology):
                         if not (("ANTENNACELL" in line) or ("SPACER" in line))
                         else line
                     )
+    
+    def setup_calibre_lvs_deck(self) -> bool:
+        # Remove conflicting specification statements found in PDK LVS decks
+        pattern = ".*({}).*\n".format("|".join(LVS_DECK_SCRUB_LINES))
+        matcher = re.compile(pattern)
+
+        source_paths = self.get_setting("technology.sky130.lvs_deck_sources")
+        lvs_decks = self.config.lvs_decks
+        if not lvs_decks:
+            return True
+        for i, deck in enumerate(lvs_decks):
+            if deck.tool_name != "calibre":
+                continue
+            try:
+                source_path = Path(source_paths[i])
+            except IndexError:
+                self.logger.error(
+                    "No corresponding source for LVS deck {}".format(deck)
+                )
+                continue
+            if not source_path.exists():
+                raise FileNotFoundError(f"LVS deck not found: {source_path}")
+            cache_tech_dir_path = Path(self.cache_dir)
+            dest_path = os.path.join(cache_tech_dir_path, os.path.basename(deck.path))
+            with open(source_path, "r") as sf:
+                with open(dest_path, "w") as df:
+                    self.logger.info(
+                        "Modifying LVS deck: {} -> {}".format(source_path, dest_path)
+                    )
+                    df.write(matcher.sub("", sf.read()))
+                    df.write(LVS_DECK_INSERT_LINES)
+        return True
 
     def get_tech_par_hooks(self, tool_name: str) -> List[HammerToolHookAction]:
         hooks = {
@@ -1234,36 +1269,6 @@ def pegasus_drc_blackbox_io_cells(ht: HammerTool) -> bool:
         f.write(drc_box)
     return True
 
-def setup_calibre_lvs_deck(ht: HammerTool) -> bool:
-    assert isinstance(ht, HammerLVSTool), "Modify Calibre LVS deck for LVS only"
-    # Remove conflicting specification statements found in PDK LVS decks
-    pattern = '.*({}).*\n'.format('|'.join(LVS_DECK_SCRUB_LINES))
-    matcher = re.compile(pattern)
-
-    source_paths = ht.get_setting('technology.sky130.lvs_deck_sources')
-    lvs_decks = ht.technology.config.lvs_decks
-    if not lvs_decks:
-        return True
-    for i,deck in enumerate(lvs_decks):
-        if deck.tool_name != 'calibre': continue
-        try:
-            source_path = Path(source_paths[i])
-        except IndexError:
-            ht.logger.error(
-                'No corresponding source for LVS deck {}'.format(deck))
-            continue
-        if not source_path.exists():
-            raise FileNotFoundError(f"LVS deck not found: {source_path}")
-        dest_path = deck.path
-        ht.technology.ensure_dirs_exist(dest_path)
-        with open(source_path, 'r') as sf:
-            with open(dest_path, 'w') as df:
-                ht.logger.info("Modifying LVS deck: {} -> {}".format
-                    (source_path, dest_path))
-                df.write(matcher.sub("", sf.read()))
-                df.write(LVS_DECK_INSERT_LINES)
-    return True
-
 # we need this because:
 # * (while cadence std cell ports are on M1), IO cells (openPDKs) ports are still on LI1
 # * we need to tell Innovus to see/be aware of the LI1 layer (since ports are on that layer), as opposed to abstracting it out (and only seeing met1 & above).
@@ -1282,7 +1287,7 @@ LAYER pwell
 END pwell
 LAYER li1
   TYPE MASTERSLICE ;
-END li1ity
+END li1
 LAYER licon
   TYPE CUT ;
 END licon
