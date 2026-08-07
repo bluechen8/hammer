@@ -87,7 +87,7 @@ class SKY130Tech(HammerTechnology):
         elif slib == "sky130_scl":
             libs += [
                 Library(
-                    lef_file=os.path.join(SKY130_SCL, "sky130_scl_9T_tech/lef/sky130_scl_9T.tlef"),
+                    lef_file="cache/sky130_scl_9T.tlef",
                     verilog_sim=os.path.join(SKY130_SCL, "sky130_scl_9T/verilog/sky130_scl_9T.v"),
                     provides=[Provide(lib_type="technology")],
                 ),
@@ -857,16 +857,17 @@ class SKY130Tech(HammerTechnology):
         # iterating through all the cells is intentional, since recent PDK versions ship all the cells in 1 GDS file; if we only pulled out the level shifter lef into its own file, we would need to extract that 1 cell into a new GDS (would need to manually do this every PDK update, not sustainable).
         # We can include all the HVL collateral, but will only instantiate the level shifter in the hammer design yaml.
 
+        # TODO(jimfang) BEFORE PROD: place edited level shifter collat in hammer plugin folder, then change this path
+        source_path = Path("/scratch/jfx/lsbufhv21v_1_edit/sky130_fd_sc_hvl__lsbufhv2lv_1_m1_access.lef")
+        # source_path = (
+        #     sky130A_path
+        #     / "libs.ref"
+        #     / "sky130_fd_sc_hvl"
+        #     / "lef"
+        #     / "sky130_fd_sc_hvl.lef"
+        # )
+        
         lef_name = "sky130_fd_sc_hvl__lsbufhv2lv_1.lef"
-
-        sky130A_path = Path(self.get_setting("technology.sky130.sky130A"))
-        source_path = (
-            sky130A_path
-            / "libs.ref"
-            / "sky130_fd_sc_hvl"
-            / "lef"
-            / "sky130_fd_sc_hvl.lef"
-        )
         cache_path = Path(self.cache_dir) / "fd_sc_hvl__lef" / lef_name # will be used in design.yaml & correlated to the sky130_fd_sc_hvl gds
         cache_path.parent.mkdir(exist_ok=True)
 
