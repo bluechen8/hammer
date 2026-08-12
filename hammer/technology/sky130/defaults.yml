@@ -165,6 +165,12 @@ par.generate_power_straps_options:
     power_utilization_met4: 0.15
     power_utilization_met5: 0.5
 
+par.innovus.qrc_layer_map: "sky130_qrc_layer.map"
+par.innovus.qrc_layer_map_meta: prependlocal
+
+power.voltus.lef_layer_map: "lefdefLayer.map"
+power.voltus.lef_layer_map_meta: prependlocal
+
 sim.inputs:
   defines: ["FUNCTIONAL", "UNIT_DELAY=#1"]
   defines_meta: append

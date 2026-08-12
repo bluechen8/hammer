@@ -1,0 +1,19 @@
+#This file contains the mapping between technology layers and lefdef layers.
+#
+#Same sky130 LEF <-> QRC name mismatch as sky130_qrc_layer.map (li1/li,
+#met*/metal*, via/via1), but in the 4-column format Voltus takes via
+#set_pg_library_mode -lef_layer_map. See sky130_qrc_layer.map for the details.
+
+#layer type	tech layer name		lefdef layer name
+
+metal	li	lefdef	 li1
+via	mcon	lefdef	 mcon
+metal	metal1	lefdef	 met1
+via	via1	lefdef	 via
+metal	metal2	lefdef	 met2
+via	via2	lefdef	 via2
+metal	metal3	lefdef	 met3
+via	via3	lefdef	 via3
+metal	metal4	lefdef	 met4
+via	via4	lefdef	 via4
+metal	metal5	lefdef	 met5
