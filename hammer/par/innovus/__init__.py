@@ -288,6 +288,11 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
         self.write_contents_to_path(self.generate_mmmc_script(), mmmc_path)
         verbose_append("read_mmmc {mmmc_path}".format(mmmc_path=mmmc_path))
 
+        # Optional LEF <-> QRC tech file layer name map
+        qrc_layer_map = self.get_setting("par.innovus.qrc_layer_map")
+        if qrc_layer_map is not None:
+            verbose_append(f"set_db extract_rc_lef_tech_file_map {qrc_layer_map}")
+
         # Read netlist.
         # Innovus only supports structural Verilog for the netlist; the Verilog can be optionally compressed.
         if not self.check_input_files([".v", ".v.gz"]):
