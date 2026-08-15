@@ -237,7 +237,8 @@ def get_inst_path_for_signal(signal_name: str) -> str:
     return f"iocell_{signal_name}/iocell"
 
 def get_inst_path_for_nc(idx: int) -> str:
-    return get_inst_path_for_signal(f"nc_{idx}")
+    # return get_inst_path_for_signal(f"nc_{idx}")
+    return f"nc_{idx}/iocell"
 
 
 def generate_iofile(iomap: IOMap, design_info: DesignInfo | None) -> IOFileModel:

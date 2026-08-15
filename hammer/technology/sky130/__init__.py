@@ -392,6 +392,23 @@ class SKY130Tech(HammerTechnology):
             metals = list(
                 map(lambda m: Metal.model_validate(m), LEFUtils.get_metals(tlef_path))
             )
+            
+            # The Cadence SCL routing pitches are larger than min_width + DRC min_spacing.
+            # Hammer's TWWT power-strap generator requires its first spacing rule to
+            # represent the track-aligned spacing: pitch - min_width.
+            for metal in metals:
+                track_aligned_spacing = metal.pitch - metal.min_width
+
+                metal.power_strap_widths_and_spacings = [
+                    rule.model_copy(
+                        update={
+                            "min_spacing": max(rule.min_spacing,
+                            track_aligned_spacing)
+                        }
+                    )
+                    for rule in metal.power_strap_widths_and_spacings
+                ]
+            
             stackups.append(
                 Stackup(name=slib, grid_unit=Decimal("0.001"), metals=metals)
             )
@@ -1110,6 +1127,8 @@ set_db route_detail_use_multi_cut_via_effort medium
             """
 # For top module: snap die to manufacturing grid, not placement grid
 set_db floorplan_snap_die_grid manufacturing
+set_db floorplan_snap_core_grid manufacturing
+set_db floorplan_snap_all_corners_to_grid true
         """
         )
 
@@ -1155,10 +1174,50 @@ Set par.generate_power_straps_options.by_tracks.generate_rail_layer: false"""
         """
 # Power strap definition for layer met1 (rails):
 # should be .14
-set_db add_stripes_stacked_via_top_layer met1
+
+reset_db -category add_stripes
+
+# M1-only stripe generation. Do not generate vias during this add_stripes
+# operation; M1<->M2 vias are added explicitly afterward.
 set_db add_stripes_stacked_via_bottom_layer met1
-set_db add_stripes_spacing_from_block 4.000
-add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none
+set_db add_stripes_stacked_via_top_layer met1
+
+# set_db add_stripes_spacing_from_block 4.0
+# set_db add_stripes_spacing_from_block 0.0 
+
+# set_db add_stripes_ignore_block_check false
+
+# set_db add_stripes_ignore_drc true
+
+set rail_width       0.400
+set rail_spacing     3.740
+set same_net_pitch   8.280
+
+puts "  rail width:       $rail_width"
+puts "  rail spacing:     $rail_spacing"
+puts "  same-net pitch:   $same_net_pitch"
+puts "  core bbox:        [get_db designs .core_bbox]"
+
+add_stripes \
+    -nets {VDD VSS} \
+    -layer met1 \
+    -direction horizontal \
+    -start_from bottom \
+    -start_offset \
+    -0.200 \
+    -width $rail_width \
+    -spacing $rail_spacing \
+    -set_to_set_distance $same_net_pitch \
+    -switch_layer_over_obs false \
+    -max_same_layer_jog_length 2.0 \
+    -pad_core_ring_top_layer_limit met1 \
+    -pad_core_ring_bottom_layer_limit met1 \
+    -block_ring_top_layer_limit met1 \
+    -block_ring_bottom_layer_limit met1 \
+    -use_wire_group 0 \
+    -snap_wire_center_to_grid none
+    
+reset_db -category add_stripes
 """
     )
     return True
@@ -1289,6 +1348,9 @@ END pwell
 LAYER li1
   TYPE MASTERSLICE ;
 END li1
+LAYER AREAIDLD
+  TYPE MASTERSLICE ;
+END AREAIDLD
 LAYER licon
   TYPE CUT ;
 END licon
