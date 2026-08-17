@@ -545,7 +545,11 @@ class SKY130Tech(HammerTechnology):
                             "verilog",
                             library + ".v" # sky130_fd_sc_hd.v
                         ),
-                        lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
+                        lef_file = (
+                            "cache/sky130_ef_io.lef"
+                            if library == "sky130_ef_io"
+                            else os.path.join(library_base_path, "lef", library + ".lef")
+                        ), # we modify sky130_ef_io.lef in setup_io_lefs(), so use the modified version if we are adding sky130_ef_io collateral
                         spice_file=netlist_path,
                         gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
                         corner=Corner(nmos=speed, pmos=speed, temperature=temp),
@@ -564,7 +568,11 @@ class SKY130Tech(HammerTechnology):
                             "verilog",
                             library + ".v" # sky130_scl_9T.v
                         ),
-                        lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
+                        lef_file = (
+                            "cache/sky130_ef_io.lef"
+                            if library == "sky130_ef_io"
+                            else os.path.join(library_base_path, "lef", library + ".lef")
+                        ), # we modify sky130_ef_io.lef in setup_io_lefs(), so use the modified version if we are adding sky130_ef_io collateral
                         spice_file=netlist_path,
                         gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
                         corner=Corner(nmos=speed, pmos=speed, temperature=temp),
@@ -633,9 +641,7 @@ class SKY130Tech(HammerTechnology):
                         
                     # add ef_io cell's lef files (one time is enough since this isn't specific to the particular gds)
                     lib_entry = Library(
-                        lef_file=os.path.join(
-                            io_library_base_path, "lef", "sky130_ef_io.lef"
-                        ),
+                        lef_file="cache/sky130_ef_io.lef",
                         provides=[Provide(lib_type="iocell", vt="RVT")],
                     )
                     libs.append(lib_entry)
@@ -810,59 +816,503 @@ class SKY130Tech(HammerTechnology):
     #     PORT                         PORT CLASS CORE
     # connect/disconnect spacers must be CLASS PAD SPACER, not AREAIO - known bug, see some fixes already commited here: https://github.com/fossi-foundation/open-pdks/commit/d815bb30c9afdf9e264c276a8a2b533108dea3d0
     # add ANTENNAGATEAREA 1.529 for met3 => total MOS gate-oxide area electrically connected to that PIN -- cannot confirm the source of 1.529 number.
+    # def setup_io_lefs(self) -> None:
+    #     sky130A_path = Path(self.get_setting("technology.sky130.sky130A"))
+    #     source_path = (
+    #         sky130A_path / "libs.ref" / "sky130_fd_io" / "lef" / "sky130_ef_io.lef"
+    #     )
+    #     if not source_path.exists():
+    #         raise FileNotFoundError(f"IO LEF not found: {source_path}")
+
+    #     cache_tech_dir_path = Path(self.cache_dir)
+    #     os.makedirs(cache_tech_dir_path, exist_ok=True)
+    #     dest_path = cache_tech_dir_path / "sky130_ef_io.lef"
+
+    #     with open(source_path, "r") as sf:
+    #         with open(dest_path, "w") as df:
+    #             self.logger.info(
+    #                 "Modifying IO LEF: {} -> {}".format(source_path, dest_path)
+    #             )
+    #             sl = sf.readlines()
+    #             for net in ["VCCD1", "VSSD1", "VDDA", "VSSA", "VSSIO"]:
+    #                 start = [idx for idx, line in enumerate(sl) if "PIN " + net in line]
+    #                 end = [idx for idx, line in enumerate(sl) if "END " + net in line]
+    #                 intervals = zip(start, end)
+    #                 for intv in intervals:
+    #                     port_idx = [
+    #                         idx
+    #                         for idx, line in enumerate(sl[intv[0] : intv[1]])
+    #                         if "PORT" in line and "met3" in sl[intv[0] + idx + 1]
+    #                     ]
+    #                     for idx in port_idx:
+    #                         sl[intv[0] + idx] = sl[intv[0] + idx].replace(
+    #                             "PORT", "PORT\n      CLASS CORE ;"
+    #                         )
+    #             # force class to spacer
+    #             for macro_name in [
+    #                 "sky130_ef_io__disconnect_vccd_slice_5um",
+    #                 "sky130_ef_io__disconnect_vdda_slice_5um",
+    #                 "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um",
+    #             ]:
+    #                 start = [
+    #                     idx
+    #                     for idx, line in enumerate(sl)
+    #                     if f"MACRO {macro_name}" in line
+    #                 ]
+    #                 sl[start[0] + 1] = sl[start[0] + 1].replace("AREAIO", "SPACER")
+
+    #             for idx, line in enumerate(sl):
+    #                 if "PIN OUT" in line:
+    #                     sl[idx + 1].replace(
+    #                         "DIRECTION INPUT ;",
+    #                         "DIRECTION INPUT ;\n    ANTENNAGATEAREA 1.529 LAYER met3 ;",
+    #                     )
+
+    #             df.writelines(sl)
+    
     def setup_io_lefs(self) -> None:
+        """
+        Prepare a modified sky130_ef_io LEF for Innovus.
+
+        Modifications:
+        1. Mark met3 PORTs of selected dedicated PAD POWER pins as CLASS CORE.
+        Innovus sRoute uses this annotation to distinguish the
+        core-facing power ports from the pad-ring-facing ports.
+
+        This applies to both clamped and non-clamped dedicated power pads,
+        but NOT to arbitrary IO macros, GPIOs, spacers, corner cells, etc.
+
+            pad-ring side                         core side
+            M4/M5 IO buses -- power pad -- M3 power tail
+            ordinary PORT               PORT CLASS CORE
+
+        2. Force selected connect/disconnect spacer cells to
+        CLASS PAD SPACER instead of CLASS PAD AREAIO.
+
+        3. Add ANTENNAGATEAREA 1.529 LAYER met3 to PIN OUT entries.
+
+        The resulting LEF is written into the Hammer technology cache.
+        """
+
         sky130A_path = Path(self.get_setting("technology.sky130.sky130A"))
         source_path = (
-            sky130A_path / "libs.ref" / "sky130_fd_io" / "lef" / "sky130_ef_io.lef"
+            sky130A_path
+            / "libs.ref"
+            / "sky130_fd_io"
+            / "lef"
+            / "sky130_ef_io.lef"
         )
+
         if not source_path.exists():
             raise FileNotFoundError(f"IO LEF not found: {source_path}")
 
         cache_tech_dir_path = Path(self.cache_dir)
         os.makedirs(cache_tech_dir_path, exist_ok=True)
+
         dest_path = cache_tech_dir_path / "sky130_ef_io.lef"
 
-        with open(source_path, "r") as sf:
-            with open(dest_path, "w") as df:
-                self.logger.info(
-                    "Modifying IO LEF: {} -> {}".format(source_path, dest_path)
-                )
-                sl = sf.readlines()
-                for net in ["VCCD1", "VSSD1", "VDDA", "VSSA", "VSSIO"]:
-                    start = [idx for idx, line in enumerate(sl) if "PIN " + net in line]
-                    end = [idx for idx, line in enumerate(sl) if "END " + net in line]
-                    intervals = zip(start, end)
-                    for intv in intervals:
-                        port_idx = [
-                            idx
-                            for idx, line in enumerate(sl[intv[0] : intv[1]])
-                            if "PORT" in line and "met3" in sl[intv[0] + idx + 1]
-                        ]
-                        for idx in port_idx:
-                            sl[intv[0] + idx] = sl[intv[0] + idx].replace(
-                                "PORT", "PORT\n      CLASS CORE ;"
-                            )
-                # force class to spacer
-                for macro_name in [
-                    "sky130_ef_io__disconnect_vccd_slice_5um",
-                    "sky130_ef_io__disconnect_vdda_slice_5um",
-                    "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um",
-                ]:
-                    start = [
-                        idx
-                        for idx, line in enumerate(sl)
-                        if f"MACRO {macro_name}" in line
-                    ]
-                    sl[start[0] + 1] = sl[start[0] + 1].replace("AREAIO", "SPACER")
+        self.logger.info(
+            "Modifying IO LEF: {} -> {}".format(source_path, dest_path)
+        )
 
-                for idx, line in enumerate(sl):
-                    if "PIN OUT" in line:
-                        sl[idx + 1].replace(
-                            "DIRECTION INPUT ;",
-                            "DIRECTION INPUT ;\n    ANTENNAGATEAREA 1.529 LAYER met3 ;",
+        with open(source_path, "r") as sf:
+            sl = sf.readlines()
+
+        source_core_count = "".join(sl).count("CLASS CORE ;")
+        self.logger.info(
+            "IO LEF source CLASS CORE count: {}".format(source_core_count)
+        )
+
+        # ------------------------------------------------------------------
+        # Identify dedicated CLASS PAD POWER macros.
+        #
+        # Do not restrict this to "_clamped" macros: non-clamped dedicated
+        # supply pads also have core-facing met3 power ports which need the
+        # same CLASS CORE annotation.
+        #
+        # At the same time, do not apply the modification to every occurrence
+        # of VDDIO/VSSIO/VCCD/etc. in the entire IO library. Only dedicated
+        # PAD POWER macros are eligible.
+        # ------------------------------------------------------------------
+
+        pad_power_macros = set()
+
+        current_macro = None
+
+        for line in sl:
+            stripped = line.strip()
+
+            if stripped.startswith("MACRO "):
+                parts = stripped.split()
+                current_macro = parts[1] if len(parts) >= 2 else None
+                continue
+
+            if (
+                current_macro is not None
+                and stripped == "CLASS PAD POWER ;"
+            ):
+                pad_power_macros.add(current_macro)
+                continue
+
+            if (
+                current_macro is not None
+                and stripped == f"END {current_macro}"
+            ):
+                current_macro = None
+
+        self.logger.info(
+            "IO LEF: found {} CLASS PAD POWER macros".format(
+                len(pad_power_macros)
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Mark core-facing met3 PG ports as CLASS CORE.
+        #
+        # Selection is deliberately constrained to:
+        #
+        #   1. Macro is CLASS PAD POWER.
+        #   2. Exact PIN name is one of the known supply pins below.
+        #   3. The individual PORT contains met3 geometry.
+        #
+        # This means:
+        #
+        #   dedicated VDDIO/VSSIO/VCCD/VSSD/etc. pads  -> eligible
+        #   clamped dedicated supply pads              -> eligible
+        #   non-clamped dedicated supply pads          -> eligible
+        #   GPIO / signal pads                         -> excluded
+        #   com_bus/connect/disconnect spacers          -> excluded
+        #   corner/endcap cells                        -> excluded
+        #
+        # Exact PIN matching is important. For example, "VSSIO" must not
+        # accidentally match VSSIO_Q.
+        # ------------------------------------------------------------------
+
+        core_pin_names = {
+            "VCCD",
+            "VCCD1",
+            "VSSD",
+            "VSSD1",
+            "VDDA",
+            "VSSA",
+            "VDDIO",
+            "VSSIO",
+        }
+
+        core_ports_added = 0
+        current_macro = None
+
+        i = 0
+        while i < len(sl):
+            stripped = sl[i].strip()
+
+            # Track which macro this PIN belongs to.
+            if stripped.startswith("MACRO "):
+                parts = stripped.split()
+                current_macro = parts[1] if len(parts) >= 2 else None
+                i += 1
+                continue
+
+            if (
+                current_macro is not None
+                and stripped == f"END {current_macro}"
+            ):
+                current_macro = None
+                i += 1
+                continue
+
+            # Match an exact LEF PIN declaration.
+            if stripped.startswith("PIN "):
+                parts = stripped.split()
+                pin_name = parts[1] if len(parts) >= 2 else None
+
+                if (
+                    current_macro in pad_power_macros
+                    and pin_name in core_pin_names
+                ):
+                    # Find the exact END <pin_name> corresponding to this PIN.
+                    pin_end = i + 1
+
+                    while pin_end < len(sl):
+                        if sl[pin_end].strip() == f"END {pin_name}":
+                            break
+                        pin_end += 1
+
+                    if pin_end >= len(sl):
+                        raise RuntimeError(
+                            f"Malformed IO LEF: could not find END {pin_name} "
+                            f"after line {i + 1} in macro {current_macro}"
                         )
 
-                df.writelines(sl)
+                    # Walk through each PORT belonging to this PIN.
+                    j = i + 1
+
+                    while j < pin_end:
+                        if sl[j].strip() != "PORT":
+                            j += 1
+                            continue
+
+                        # Locate the END of this PORT.
+                        port_end = j + 1
+
+                        while port_end < pin_end:
+                            if sl[port_end].strip() == "END":
+                                break
+                            port_end += 1
+
+                        if port_end >= pin_end:
+                            raise RuntimeError(
+                                f"Malformed IO LEF: unterminated PORT in "
+                                f"{current_macro}/{pin_name} near line {j + 1}"
+                            )
+
+                        # A PORT may contain more than one LAYER statement.
+                        # Mark it CORE if any of its geometry is on met3.
+                        has_met3 = False
+                        already_core = False
+
+                        for n in range(j + 1, port_end):
+                            s = sl[n].strip()
+
+                            if s == "CLASS CORE ;":
+                                already_core = True
+
+                            if s.startswith("LAYER "):
+                                layer_parts = s.split()
+
+                                if len(layer_parts) >= 2:
+                                    layer_name = layer_parts[1].rstrip(";")
+
+                                    if layer_name == "met3":
+                                        has_met3 = True
+
+                        if has_met3 and not already_core:
+                            # Preserve the PORT indentation and insert
+                            # CLASS CORE immediately after PORT.
+                            indent = sl[j][
+                                : len(sl[j]) - len(sl[j].lstrip())
+                            ]
+
+                            sl[j] = (
+                                f"{indent}PORT\n"
+                                f"{indent}  CLASS CORE ;\n"
+                            )
+
+                            core_ports_added += 1
+
+                            self.logger.debug(
+                                "IO LEF: marked {}/{} met3 PORT "
+                                "as CLASS CORE".format(
+                                    current_macro,
+                                    pin_name,
+                                )
+                            )
+
+                        j = port_end + 1
+
+                    i = pin_end
+
+            i += 1
+
+        self.logger.info(
+            "IO LEF: added CLASS CORE to {} met3 PAD POWER PORTs".format(
+                core_ports_added
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Force connect/disconnect cells to be PAD SPACER rather than AREAIO.
+        #
+        # Known Open-PDKs issue/fix:
+        # https://github.com/fossi-foundation/open-pdks/commit/d815bb30c9afdf9e264c276a8a2b533108dea3d0
+        # ------------------------------------------------------------------
+
+        spacer_macro_names = [
+            "sky130_ef_io__disconnect_vccd_slice_5um",
+            "sky130_ef_io__disconnect_vdda_slice_5um",
+            "sky130_ef_io__connect_vcchib_vccd_and_vswitch_vddio_slice_20um",
+        ]
+
+        for macro_name in spacer_macro_names:
+            macro_start = None
+
+            for idx, line in enumerate(sl):
+                if line.strip() == f"MACRO {macro_name}":
+                    macro_start = idx
+                    break
+
+            if macro_start is None:
+                raise RuntimeError(
+                    f"Could not find IO macro {macro_name} in {source_path}"
+                )
+
+            # CLASS is expected near the beginning of the macro, but search a
+            # short distance rather than blindly assuming macro_start + 1.
+            class_found = False
+
+            for idx in range(
+                macro_start + 1,
+                min(macro_start + 10, len(sl)),
+            ):
+                stripped = sl[idx].strip()
+
+                if stripped.startswith("CLASS "):
+                    sl[idx] = sl[idx].replace("AREAIO", "SPACER")
+                    class_found = True
+                    break
+
+                # Do not accidentally run into another macro.
+                if stripped.startswith("MACRO "):
+                    break
+
+            if not class_found:
+                raise RuntimeError(
+                    f"Could not find CLASS statement for IO macro {macro_name}"
+                )
+
+        # ------------------------------------------------------------------
+        # Add antenna gate area annotation to PIN OUT.
+        #
+        # The previous implementation called str.replace() without assigning
+        # its return value, so the LEF was never actually modified.
+        # ------------------------------------------------------------------
+
+        antenna_count = 0
+
+        for idx, line in enumerate(sl):
+            if line.strip() != "PIN OUT":
+                continue
+
+            # Find the DIRECTION statement belonging to this PIN.
+            pin_end = idx + 1
+
+            while pin_end < len(sl):
+                if sl[pin_end].strip() == "END OUT":
+                    break
+                pin_end += 1
+
+            for direction_idx in range(idx + 1, pin_end):
+                if sl[direction_idx].strip() == "DIRECTION INPUT ;":
+                    indent = sl[direction_idx][
+                        : len(sl[direction_idx])
+                        - len(sl[direction_idx].lstrip())
+                    ]
+
+                    # Don't add a duplicate annotation if this source LEF
+                    # already contains one.
+                    already_has_antenna = any(
+                        "ANTENNAGATEAREA 1.529 LAYER met3 ;" in sl[n]
+                        for n in range(direction_idx + 1, pin_end)
+                    )
+
+                    if not already_has_antenna:
+                        sl[direction_idx] = (
+                            f"{indent}DIRECTION INPUT ;\n"
+                            f"{indent}ANTENNAGATEAREA 1.529 LAYER met3 ;\n"
+                        )
+                        antenna_count += 1
+
+                    break
+
+        self.logger.info(
+            "IO LEF: added ANTENNAGATEAREA to {} PIN OUT entries".format(
+                antenna_count
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Write modified LEF.
+        # ------------------------------------------------------------------
+
+        with open(dest_path, "w") as df:
+            df.writelines(sl)
+
+        # ------------------------------------------------------------------
+        # Validate the generated cache LEF.
+        #
+        # If this file contains CLASS CORE but the LEF copied into par-rundir
+        # does not, the corruption/replacement occurred after this step.
+        # ------------------------------------------------------------------
+
+        output_text = dest_path.read_text()
+        output_core_count = output_text.count("CLASS CORE ;")
+
+        self.logger.info(
+            "IO LEF cache path: {}".format(dest_path)
+        )
+        self.logger.info(
+            "IO LEF output CLASS CORE count: {}".format(output_core_count)
+        )
+
+        if output_core_count == 0:
+            raise RuntimeError(
+                "setup_io_lefs generated an IO LEF with zero "
+                f"CLASS CORE annotations: {dest_path}"
+            )
+
+        if core_ports_added == 0 and source_core_count == 0:
+            raise RuntimeError(
+                "setup_io_lefs did not find any eligible met3 PAD POWER "
+                "PORTs requiring CLASS CORE annotation"
+            )
+
+        # ------------------------------------------------------------------
+        # Explicit validation of known core-facing power-pad geometries.
+        #
+        # These cover both the original VSSA failure and the later VDDIO/VCCD
+        # failures seen in Innovus connectivity checking.
+        # ------------------------------------------------------------------
+
+        expected_core_ports = {
+            "VSSA port 1": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 0.495 -2.035 24.395 30.480 ;"
+            ),
+            "VSSA port 2": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 50.390 -2.035 74.290 34.725 ;"
+            ),
+            "VDDIO port 1": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 0.495 -2.035 24.395 17.765 ;"
+            ),
+            "VDDIO port 2": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 50.390 -2.035 74.290 17.765 ;"
+            ),
+            "VCCD port 1": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 0.500 -0.035 24.500 6.865 ;"
+            ),
+            "VCCD port 2": (
+                "PORT\n"
+                "      CLASS CORE ;\n"
+                "      LAYER met3 ;\n"
+                "        RECT 50.755 -0.035 74.700 6.865 ;"
+            ),
+        }
+
+        for description, expected_text in expected_core_ports.items():
+            if expected_text not in output_text:
+                raise RuntimeError(
+                    "Generated IO LEF is missing CLASS CORE on known "
+                    f"core-facing {description}"
+                )
+
+        self.logger.info(
+            "IO LEF validation passed: known VSSA/VDDIO/VCCD "
+            "core-facing met3 ports are CLASS CORE"
+        )
 
     def setup_hvl_ls_lef(self) -> bool:
         # Treat HVL cells as if they were hard macros to avoid needing to set them
