@@ -423,7 +423,7 @@ class SKY130Tech(HammerTechnology):
                 LVSDeck(
                     tool_name="pegasus",
                     deck_name="pegasus_lvs",
-                    path=os.path.join(SKY130_CDS, "Sky130_LVS", "sky130.lvs.v0.0_1.1.pvl"),
+                    path=self.get_setting("technology.sky130.lvs_deck"),
                 )
             ]
             drc_decks = [
@@ -435,9 +435,7 @@ class SKY130Tech(HammerTechnology):
                 DRCDeck(
                     tool_name="pegasus",
                     deck_name="pegasus_drc",
-                    path=os.path.join(
-                        SKY130_CDS, "Sky130_DRC", "sky130_rev_0.0_2.12.drc.pvl"
-                    ),
+                    path=self.get_setting("technology.sky130.drc_deck"),
                 ),
             ]
         

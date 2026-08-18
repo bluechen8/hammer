@@ -14,6 +14,8 @@ technology.sky130:
   # This contains the Cadence PDK
   # this key is OPTIONAL, and is only required if you are running Pegasus DRC/LVS.
   sky130_cds: str
+  drc_deck: str
+  lvs_deck: str
 
   # RAM paths
   # OpenRAM
