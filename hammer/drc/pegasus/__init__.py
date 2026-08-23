@@ -132,6 +132,9 @@ class PegasusDRC(HammerDRCTool, CadenceTool):
         """
         v = dict(super().env_vars)
         v["PEGASUS_BIN"] = self.get_setting("drc.pegasus.pegasus_bin")
+        v["PEGASUS_DRC"] = self.get_setting(
+            f"technology.{self.technology.name}.pegasus_drc_rules_dir"
+        )
         return v
 
     @property

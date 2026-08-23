@@ -16,6 +16,7 @@ technology.sky130:
   sky130_cds: str
   drc_deck: str
   lvs_deck: str
+  pegasus_drc_rules_dir: str
 
   # RAM paths
   # OpenRAM

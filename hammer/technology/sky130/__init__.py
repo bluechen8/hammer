@@ -95,6 +95,7 @@ class SKY130Tech(HammerTechnology):
             libs += [
                 Library(
                     lef_file=os.path.join(SKY130_SCL, "sky130_scl_9T_tech/lef/sky130_scl_9T_phyCells.lef"),
+                    gds_file=os.path.join(SKY130_SCL, "sky130_scl_9T_tech/gds/sky130_scl_9T_tech.gds"),
                     provides=[Provide(lib_type="technology")],
                 ),
             ]
@@ -265,7 +266,7 @@ class SKY130Tech(HammerTechnology):
                 LVSDeck(
                     tool_name="pegasus",
                     deck_name="pegasus_lvs",
-                    path="$SKY130_CDS/Sky130_LVS/sky130.lvs.pvl",
+                    path=self.get_setting("technology.sky130.lvs_deck"),
                 ),
             ]
             drc_decks = [
@@ -282,7 +283,7 @@ class SKY130Tech(HammerTechnology):
                 DRCDeck(
                     tool_name="pegasus",
                     deck_name="pegasus_drc",
-                    path="$SKY130_CDS/Sky130_DRC/sky130_rev_0.0_2.2.drc.pvl",
+                    path=self.get_setting("technology.sky130.drc_deck"),
                 ),
             ]
         
@@ -1323,14 +1324,7 @@ class SKY130Tech(HammerTechnology):
         # We can include all the HVL collateral, but will only instantiate the level shifter in the hammer design yaml.
 
         # TODO(jimfang) BEFORE PROD: place edited level shifter collat in hammer plugin folder, then change this path
-        source_path = Path("/scratch/jfx/lsbufhv21v_1_edit/sky130_fd_sc_hvl__lsbufhv2lv_1_m1_access.lef")
-        # source_path = (
-        #     sky130A_path
-        #     / "libs.ref"
-        #     / "sky130_fd_sc_hvl"
-        #     / "lef"
-        #     / "sky130_fd_sc_hvl.lef"
-        # )
+        source_path = Path(self.get_setting("technology.sky130.misc_tapeout_collateral")) / "OPEN-PDKS-Modifications" / "sky130_fd_sc_hvl__lsbufhv2lv_1_m1_access" / "sky130_fd_sc_hvl__lsbufhv2lv_1.lef"
         
         lef_name = "sky130_fd_sc_hvl__lsbufhv2lv_1.lef"
         cache_path = Path(self.cache_dir) / "fd_sc_hvl__lef" / lef_name # will be used in design.yaml & correlated to the sky130_fd_sc_hvl gds
@@ -1449,12 +1443,11 @@ class SKY130Tech(HammerTechnology):
     def get_tech_lvs_hooks(self, tool_name: str) -> List[HammerToolHookAction]:
         calibre_hooks = []
         pegasus_hooks = []
-        if self.use_sram22:
-            calibre_hooks.append(
-                HammerTool.make_post_insertion_hook(
-                    "generate_lvs_run_file", sram22_lvs_recognize_gates_all
-                )
+        calibre_hooks.append(
+            HammerTool.make_post_insertion_hook(
+                "generate_lvs_run_file", sram22_lvs_recognize_gates_all
             )
+        )
         if self.get_setting("technology.sky130.lvs_blackbox_srams"):
             calibre_hooks.append(
                 HammerTool.make_post_insertion_hook(
@@ -1489,26 +1482,83 @@ class SKY130Tech(HammerTechnology):
         return sky130_sram_names
 
     @staticmethod
-    def sky130_sram_primitive_names() -> List[str]:
-        # TODO(jimfang) honestly should just include all fd_pr?
+    def sky130_sram_primitive_names(
+        sky130a_path: str, misc_tapeout_collateral_path: str
+    ) -> List[str]:
         spice_filenames = [
-            "sky130_fd_pr__pfet_01v8",
-            "sky130_fd_pr__nfet_01v8",
-            "sky130_fd_pr__pfet_01v8_hvt",
-            "sky130_fd_pr__special_nfet_latch",
-            "sky130_fd_pr__special_nfet_pass",
-        ]  # "sky130_fd_pr__special_pfet_latch", ]
-        paths = []
-        for fname in spice_filenames:
-            paths.append(
-                f"""/tools/commercial/skywater/local/sky130A/libs.ref/sky130_fd_pr/spice/{
-                    fname
-                }.pm3.spice"""
+            "sky130_fd_pr__pfet_01v8.pm3.spice",
+            "sky130_fd_pr__nfet_01v8.pm3.spice",
+            "sky130_fd_pr__pfet_01v8_hvt.pm3.spice",
+            "sky130_fd_pr__special_nfet_latch.pm3.spice",
+            "sky130_fd_pr__special_nfet_pass.pm3.spice",
+            "sky130_fd_pr__nfet_01v8_lvt.pm3.spice",
+            "sky130_fd_pr__nfet_g5v0d10v5.pm3.spice",
+            "sky130_fd_pr__pfet_g5v0d10v5.pm3.spice",
+            "sky130_fd_pr__nfet_05v0_nvt.pm3.spice",
+            "sky130_fd_pr__esd_nfet_g5v0d10v5.pm3.spice",
+            "sky130_fd_pr__cap_mim_m3_1.model.spice",
+            "sky130_fd_pr__cap_mim_m3_2.model.spice",
+        ]
+        spice_dir = Path(sky130a_path) / "libs.ref" / "sky130_fd_pr" / "spice"
+        pfet_latch_override = (
+            Path(misc_tapeout_collateral_path)
+            / "OPEN-PDKS-Modifications"
+            / "sky130_fd_pr"
+            / "sky130_fd_pr__special_pfet_latch.pm3.spice"
+        )
+        paths = [
+            str(
+                pfet_latch_override
+                if fname == pfet_latch_override.name
+                else spice_dir / fname
             )
-        # TODO: this is bc line 535 in the bwrc one causes a syntax error
-        # TODO(jimfang) maybe ask someone to fix it??
-        paths.append(
-            "/tools/C/elamdf/chipyard_dev/vlsi/sky130_fd_pr__special_pfet_latch.pm3.spice"
+            for fname in spice_filenames
+        ]
+        return paths
+
+    @staticmethod
+    def sky130_por_primitive_names(
+        sky130a_path: str, misc_tapeout_collateral_path: str
+    ) -> List[str]:
+        spice_dir = Path(sky130a_path) / "libs.ref" / "sky130_fd_pr" / "spice"
+        spice_filenames = [
+            "sky130_fd_pr__nfet_g5v0d10v5.pm3.spice",
+            "sky130_fd_pr__pfet_g5v0d10v5.pm3.spice",
+            "sky130_fd_pr__cap_mim_m3_1.model.spice",
+            "sky130_fd_pr__cap_mim_m3_2.model.spice",
+        ]
+        override_paths = [
+            Path(misc_tapeout_collateral_path)
+            / "OPEN-PDKS-Modifications"
+            / "sky130_fd_pr"
+            / "sky130_fd_pr__special_pfet_pass.pm3.spice",
+            Path(misc_tapeout_collateral_path)
+            / "OPEN-PDKS-Modifications"
+            / "sky130_fd_pr"
+            / "sky130_fd_pr__res_xhigh_po.model.spice",
+            Path(misc_tapeout_collateral_path)
+            / "OPEN-PDKS-Modifications"
+            / "sky130_fd_pr"
+            / "sky130_fd_pr__model__parasitic__res_po.model.spice",
+        ]
+        paths = [str(spice_dir / fname) for fname in spice_filenames]
+        paths.extend(str(path) for path in override_paths)
+        paths.extend(
+            [
+                str(
+                    Path(sky130a_path)
+                    / "libs.tech"
+                    / "ngspice"
+                    / "sky130_fd_pr__model__r+c.model.spice"
+                ),
+                str(
+                    Path(sky130a_path)
+                    / "libs.ref"
+                    / "sky130_fd_sc_hvl"
+                    / "spice"
+                    / "sky130_fd_sc_hvl.spice"
+                ),
+            ]
         )
         return paths
 
@@ -1732,19 +1782,33 @@ def pegasus_lvs_blackbox_srams(ht: HammerTool) -> bool:
         f.write(fixed_contents)
     return True
 
-# required for sram22 since they use the 130a primiviites
+# Required for SRAM22 and the PoR since they use sky130A primitives.
 def pegasus_lvs_add_130a_primitives(ht: HammerTool) -> bool:
-    assert isinstance(ht, HammerLVSTool), "Blackbox and filter SRAMs only in LVS"
+    assert isinstance(ht, HammerLVSTool), "Add sky130A primitives only in LVS"
+    sky130a_path = ht.get_setting("technology.sky130.sky130A")
+    misc_tapeout_collateral_path = ht.get_setting(
+        "technology.sky130.misc_tapeout_collateral"
+    )
+    primitive_paths = list(
+        dict.fromkeys(
+            SKY130Tech.sky130_sram_primitive_names(
+                sky130a_path, misc_tapeout_collateral_path
+            )
+            + SKY130Tech.sky130_por_primitive_names(
+                sky130a_path, misc_tapeout_collateral_path
+            )
+        )
+    )
     lvs_box = ""
-    for name in SKY130Tech.sky130_sram_primitive_names():
+    for name in primitive_paths:
         lvs_box += f"""\nschematic_path "{name}" spice;"""
     # this is because otherwise lvs crashes with tons of stdcell-level pin mismatches
     lvs_box += """\nlvs_inconsistent_reduction_threshold -none;"""
     run_file = ht.lvs_ctl_file  # type: ignore
     with open(run_file, "r+") as f:
-        # Remove SRAM SPICE file includes.
+        # Match primitive SPICE file includes already present in the control file.
         pattern = "schematic_path.*({}).*spice;\n".format(
-            "|".join(SKY130Tech.sky130_sram_primitive_names())
+            "|".join(primitive_paths)
         )
         matcher = re.compile(pattern)
         contents = f.read()
