@@ -16,6 +16,7 @@ from hammer.tech import (
     Corner,
     Decimal,
     DRCDeck,
+    ExtraLibrary,
     HammerTechnology,
     Library,
     LVSDeck,
@@ -234,6 +235,26 @@ class SKY130Tech(HammerTechnology):
         elif slib == "sky130_scl":
             # note: you need to manually include io cells in design.yml if using scl
 
+            # Physical-only cells: no function, and no Verilog model in
+            # sky130_scl_9T.v (which only covers cells with a .lib entry). They
+            # must be named here so write_netlist strips them from the sim
+            # netlist -- otherwise Innovus-inserted ANTENNA diodes survive
+            # -exclude_leaf_cells (they have a signal pin) and gate-level sim
+            # dies with "Cannot find cell in liblist". TIEHI/TIELO are NOT in
+            # this list: they drive real values and are modeled.
+            phys_only = [
+                "ANTENNA",
+                "FILL1",
+                "FILL2",
+                "FILL4",
+                "FILL8",
+                "FILL16",
+                "FILL32",
+                "FILL64",
+                "FILL_DECAP8",
+                "FILL_DECAP16",
+            ]
+
             # The cadence PDK (as of version 0.0.3) doesn't seem to have tap nor decap cells, so par won't run (and if we forced it to, lvs would fail)
             spcl_cells = [
                 SpecialCell(
@@ -405,16 +426,33 @@ class SKY130Tech(HammerTechnology):
 
                 netlist_path = spice_path if os.path.exists(spice_path) else cdl_path
 
+                # Gate-level Verilog models ship alongside their own library:
+                # sky130_fd_io/sky130_ef_io come from sky130A, standard cells
+                # from the sky130_scl release. Leave verilog_sim unset when the
+                # PDK has no model, otherwise Hammer's existence check fails
+                # every sim (RTL and gate-level) that reads verilog_sim.
+                if library == "sky130_ef_io":
+                    # The PDK's sky130_ef_io.v does not compile for simulation;
+                    # see the header of extra/sim/sky130_ef_io.v.
+                    verilog_sim_path = os.path.join(
+                        os.path.dirname(__file__), "extra", "sim", "sky130_ef_io.v"
+                    )
+                elif "sky130A" in library_base_path:
+                    verilog_sim_path = os.path.join(
+                        library_base_path, "verilog", library + ".v"
+                    )
+                else:
+                    verilog_sim_path = os.path.join(
+                        SKY130_SCL, "sky130_scl_9T", "verilog", "sky130_scl_9T.v"
+                    )
+                if not os.path.exists(verilog_sim_path):
+                    verilog_sim_path = None
+
                 lib_entry = Library(
                     nldm_liberty_file=os.path.join(
                         library_base_path, "lib", cornerfilename
                     ),
-                    verilog_sim=os.path.join(
-                        SKY130_SCL,
-                        "sky130_scl_9T",
-                        "verilog",
-                        library + "_9T.v" if slib == "sky130_scl" else ".v",
-                    ),
+                    verilog_sim=verilog_sim_path,
                     lef_file=os.path.join(library_base_path, "lef", library + ".lef"),
                     spice_file=netlist_path,
                     gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
@@ -440,12 +478,7 @@ class SKY130Tech(HammerTechnology):
                             nldm_liberty_file=os.path.join(
                                 library_base_path, "lib", cornerfilename
                             ),
-                            verilog_sim=os.path.join(
-                                SKY130_SCL,
-                                "sky130_scl_9T",
-                                "verilog",
-                                library + "_9T.v" if slib == "sky130_scl" else ".v",
-                            ),
+                            verilog_sim=verilog_sim_path,
                             lef_file=os.path.join(
                                 library_base_path, "lef", library + ".lef"
                             ),
@@ -483,6 +516,48 @@ class SKY130Tech(HammerTechnology):
             special_cells=spcl_cells,
             extra_prefixes=None,
         )
+
+    def get_extra_libraries(self) -> List[ExtraLibrary]:
+        """Redirect the Caravel POR macro at our own simulation model.
+
+        Designs on a Caravel-style pad ring declare simple_por in
+        vlsi.technology.extra_libraries, because the macro is not part of the
+        sky130 PDK proper. The behavioral model Caravel ships with it cannot be
+        simulated as instantiated, for three independent reasons:
+
+          * It references vdd3v3 inside `always @(posedge vdd3v3)` but only
+            declares it under `ifdef USE_POWER_PINS, and the file sets
+            `default_nettype none -- so without the define it does not compile.
+          * With the define it still does not work: designs connect only the
+            three signal ports, so vdd3v3 sits at Z, there is never a posedge,
+            and porb_h stays low forever. porb_h drives ENABLE_H on every IO
+            cell, so the whole pad ring would be held disabled.
+          * It instantiates sky130_fd_sc_hvl__schmittbuf_1 and
+            sky130_fd_sc_hvl__lsbufhv2lv_1, which would require the hvl library
+            models in the liblist as well.
+
+        extra/sim/simple_por.v reproduces the model's polarity and 500 ns POR
+        ramp over just the three signal ports. Redirecting here rather than in
+        the design config keeps the path out of user YAML and applies it to
+        every flow step, including `redo-` steps replaying an older config
+        snapshot.
+
+        Narrowly matched -- lib_type "por" whose verilog_sim is the PDK's
+        simple_por.v -- so a design supplying a working model of its own, or a
+        different POR macro, is left alone.
+        """
+        libs = super().get_extra_libraries()
+        model = os.path.join(
+            os.path.dirname(__file__), "extra", "sim", "simple_por.v"
+        )
+        for extra_lib in libs:
+            lib = extra_lib.library
+            provides_por = any(
+                p.lib_type == "por" for p in (lib.provides or [])
+            )
+            if provides_por and os.path.basename(lib.verilog_sim or "") == "simple_por.v":
+                lib.verilog_sim = model
+        return libs
 
     def post_install_script(self) -> None:
         self.library_name = "sky130_fd_sc_hd"
