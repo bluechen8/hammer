@@ -431,11 +431,14 @@ class SKY130Tech(HammerTechnology):
                 # from the sky130_scl release. Leave verilog_sim unset when the
                 # PDK has no model, otherwise Hammer's existence check fails
                 # every sim (RTL and gate-level) that reads verilog_sim.
-                if library == "sky130_ef_io":
-                    # The PDK's sky130_ef_io.v does not compile for simulation;
-                    # see the header of extra/sim/sky130_ef_io.v.
+                if library in ("sky130_ef_io", "sky130_fd_io"):
+                    # Neither PDK Verilog file is usable for simulation as shipped:
+                    # sky130_ef_io.v does not compile, and sky130_fd_io.v corrupts
+                    # its pad outputs to X because +vcs+initreg pokes the $setuphold
+                    # notifier registers. Simulation-only replacements live in
+                    # extra/sim/ and are named after the file they stand in for.
                     verilog_sim_path = os.path.join(
-                        os.path.dirname(__file__), "extra", "sim", "sky130_ef_io.v"
+                        os.path.dirname(__file__), "extra", "sim", library + ".v"
                     )
                 elif "sky130A" in library_base_path:
                     verilog_sim_path = os.path.join(

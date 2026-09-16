@@ -14,6 +14,26 @@ older config snapshot.
 |---|---|---|
 | `simple_por.v` | `${technology.sky130.caravel}/verilog/rtl/simple_por.v` | `SKY130Tech.get_extra_libraries` |
 | `sky130_ef_io.v` | `${technology.sky130.sky130A}/.../sky130_ef_io.v` | `SKY130Tech.gen_config`, per-library redirect |
+| `sky130_fd_io.v` | `${technology.sky130.sky130A}/.../sky130_fd_io.v` | `SKY130Tech.gen_config`, per-library redirect |
+
+## Why the pad primitives are modeled and not used as shipped
+
+The PDK's `sky130_fd_io` models corrupt their own outputs to X on a timing-check
+violation, via a notifier reg driven by `$setuphold`. The flow sets `+notimingcheck`,
+so no check ever fires -- but it also sets `+vcs+initreg`, which writes *every* reg at
+time 0, notifiers included. That write is a value change, so the corruption fires
+anyway and is not cleared until the pad's next input transition. On the reset pad that
+is `porb_h` rising 500ns later, so the chip's reset is X for 500ns of free-running
+clock, which poisons every flop that has no reset. `+vcs+initreg` cannot be scoped, and
+dropping it leaves the netlist under-initialised instead, so the pads are modeled.
+
+The `sky130_fd_sc_hvl` level shifter is deliberately not modeled -- it was measured
+propagating correctly, and it is declared from user YAML, not from this plugin.
+
+These models cover the digital signal path only; each file's header lists what is
+left out (hold mode, input disable, pull-ups, trip point, slew, analog mux). Gate-level
+sim therefore does not validate IO *configuration* -- check those tied pins
+structurally.
 
 ## Cadence `sky130_scl_9T` standard cells: used verbatim, no model needed
 
