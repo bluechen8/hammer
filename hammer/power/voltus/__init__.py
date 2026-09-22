@@ -127,11 +127,11 @@ class Voltus(HammerPowerTool, CadenceTool):
                                                  self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)])
 
     def get_mmmc_spice_corners(self, corner: MMMCCorner) -> List[str]:
-        return self.technology.read_libs([hammer_tech.filters.spice_model_lib_corner_filter],
-                                             hammer_tech.HammerTechnologyUtils.to_plain_item,
-                                             extra_pre_filters=[
-                                                 self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)],
-                                             must_exist=False)
+        # SPICE .lib section names are metadata, not filesystem paths.
+        match = self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)
+        return list(dict.fromkeys(lib.spice_model_file.lib_corner
+                    for lib in self.technology.get_available_libraries()
+                    if match(lib) and lib.spice_model_file and lib.spice_model_file.lib_corner))
 
     @property
     def steps(self) -> List[HammerToolStep]:

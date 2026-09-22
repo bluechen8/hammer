@@ -15,6 +15,7 @@ import os
 import json
 import datetime
 import io
+import re
 from typing import Dict, List, Optional, Tuple, Any
 
 import hammer.tech as hammer_tech
@@ -85,7 +86,7 @@ class xcelium(HammerSimTool, CadenceTool):
     self.output_tb_dut  = self.get_setting(f"{self.sim_input_prefix}.tb_dut")
     self.output_level   = self.get_setting(f"{self.sim_input_prefix}.level")
     
-    if saif_opts ["mode"] is not None:
+    if saif_opts["mode"] is not None and os.path.isfile(os.path.join(self.run_dir, "ucli.saif")):
       self.output_saifs.append(os.path.join(self.run_dir, "ucli.saif"))
     if wav_opts["type"] is not None:
       extension = wav_opts["type"].lower()
@@ -170,7 +171,7 @@ class xcelium(HammerSimTool, CadenceTool):
     
     # Because key-driven waveform spec is optional, should return none-type dict by default.
     wav_opts: Dict[str, Any] = {}
-    if self.get_setting(f"{self.sim_waveform_prefix}.type") is not None:
+    if self._database.has_setting(f"{self.sim_waveform_prefix}.type") and self.get_setting(f"{self.sim_waveform_prefix}.type") is not None:
       optional_keys = ["shm_incr"]
       wav_opts = self.get_settings_from_dict(wav_opts_def, self.sim_waveform_prefix, optional_keys)
       wav_opts_proc = wav_opts.copy()
@@ -186,7 +187,8 @@ class xcelium(HammerSimTool, CadenceTool):
   def extract_saif_opts(self) -> Dict[str, str]:
 
     saif_opts = {}
-    saif_opts ["mode"] = self.get_setting(f"{self.sim_input_prefix}.saif.mode")
+    mode = self.get_setting(f"{self.sim_input_prefix}.saif.mode")
+    saif_opts["mode"] = None if mode == "none" else mode
 
     if saif_opts ["mode"] == "time":
       saif_opts ["start_time"] = self.get_setting(f"{self.sim_input_prefix}.saif.start_time")
@@ -261,7 +263,7 @@ class xcelium(HammerSimTool, CadenceTool):
   # Try to maintain some parity with vcs plugin.
   def generate_gl_deposit_tcl(self) -> List[str]:
     sim_opts  = self.extract_sim_opts() [1]
-    tb_prefix = sim_opts["tb_name"] + '.' + sim_opts["tb_dut"]
+    tb_prefix = sim_opts["tb_dut"]
     force_val = sim_opts["gl_register_force_value"]
     
     abspath_all_regs = os.path.join(os.getcwd(), self.all_regs)
@@ -276,6 +278,8 @@ class xcelium(HammerSimTool, CadenceTool):
         path = reg["path"]
         path = path.split('/')
         special_char =['[',']','#','$',';','!',"{",'}','\\']
+        # find_regs emits \name\; the netlist escape ends with whitespace.
+        path = [p[:-1] if p.startswith("\\") and p.endswith("\\") else p for p in path]
         path = ['@{' + subpath + ' }' if any(char in subpath for char in special_char) else subpath for subpath in path]
         path='.'.join(path)
         pin = reg["pin"]
@@ -287,7 +291,7 @@ class xcelium(HammerSimTool, CadenceTool):
   # Until sdf annotation provides values other than maximum, sdf_cmd_file will only support mtm max.
   def generate_sdf_cmd_file(self) -> bool:
     sim_opts  = self.extract_sim_opts()[1]
-    prefix = sim_opts["tb_name"] + '.' + sim_opts["tb_dut"]
+    prefix = sim_opts["tb_dut"]
 
     f = open(self.sdf_cmd_file,"w+")
     f.write(f'SDF_FILE = "{self.sdf_file}", \n')
@@ -301,7 +305,7 @@ class xcelium(HammerSimTool, CadenceTool):
   def generate_saif_tcl_cmd(self) -> str:
     saif_opts: Dict[str, Any] = self.extract_saif_opts()
     sim_opts  = self.extract_sim_opts()[1]
-    prefix = sim_opts["tb_name"] + '.' + sim_opts["tb_dut"]
+    prefix = sim_opts["tb_dut"]
 
     saif_args = ""
 
@@ -371,10 +375,20 @@ class xcelium(HammerSimTool, CadenceTool):
     f.write("run \n")
     
     # Close databases and dumps properly.
-    f.write("dumpsaif -end \n")
-    f.write("database -close *db \n")
+    if saif_opts["mode"] is not None: f.write("dumpsaif -end \n")
+    if wav_opts["type"] is not None: f.write("database -close *db \n")
     f.write("exit")
     f.close()  
+    return True
+
+  def handle_errors(self, output: str, code: int) -> bool:
+    raise RuntimeError("Xcelium exited with status {}".format(code))
+
+  def run_xrun(self, args: List[str]) -> bool:
+    output = self.run_executable(args, cwd=self.run_dir)
+    if re.search(r"\*[EF],", output):
+      self.logger.error("Xcelium reported an error; inspect the xrun log")
+      return False
     return True
 
   def compile_xrun(self) -> bool:
@@ -388,31 +402,30 @@ class xcelium(HammerSimTool, CadenceTool):
 
     # Gather complation-only options
     xrun_opts     = self.extract_xrun_opts()[1]
-    compile_opts  = self.get_setting(f"{self.tool_config_prefix}.compile_opts", [])       
+    compile_opts  = list(self.get_setting(f"{self.tool_config_prefix()}.compile_opts") or [])
     compile_opts.append("-logfile xrun_compile.log")
     if xrun_opts["mce"]: compile_opts.append(self.generate_mc_cmd())
     compile_opts  = ('COMPILE', compile_opts)
     
     arg_file_path = self.generate_arg_file("xrun_compile.arg", "HAMMER-GEN XRUN COMPILE ARG FILE", [compile_opts])
-    args =[self.xcelium_bin]
-    args.append(f"-compile -f {arg_file_path}")
+    args = [self.xcelium_bin, "-compile", "-f", arg_file_path]
     
     self.update_submit_options()  
-    self.run_executable(args, cwd=self.run_dir)
+    success = self.run_xrun(args)
     HammerVLSILogging.enable_colour = True
     HammerVLSILogging.enable_tag = True
-    return True
+    return success
     
   def elaborate_xrun(self) -> bool: 
     xrun_opts = self.extract_xrun_opts()[1]
     sim_opts  = self.extract_sim_opts()[1]
-    elab_opts = self.get_setting(f"{self.tool_config_prefix}.elab_opts", [])
+    elab_opts = list(self.get_setting(f"{self.tool_config_prefix()}.elab_opts") or [])
     elab_opts.append("-logfile xrun_elab.log")
     elab_opts.append("-glsperf")
     elab_opts.append("-genafile access.txt")  
     
+    elab_opts.extend(self.get_verilog_models())  # RTL also instantiates technology SRAMs.
     if self.level.is_gatelevel():
-      elab_opts.extend(self.get_verilog_models())    
       if sim_opts["timing_annotated"]:
         self.generate_sdf_cmd_file()
         elab_opts.append(f"-sdf_cmd_file {self.sdf_cmd_file}")  
@@ -429,12 +442,10 @@ class xcelium(HammerSimTool, CadenceTool):
     elab_opts = ('ELABORATION', elab_opts)
         
     arg_file_path = self.generate_arg_file("xrun_elab.arg", "HAMMER-GEN XRUN ELAB ARG FILE", [elab_opts])
-    args =[self.xcelium_bin]
-    args.append(f"-elaborate -f {arg_file_path}")
+    args = [self.xcelium_bin, "-elaborate", "-f", arg_file_path]
     
     self.update_submit_options()
-    self.run_executable(args, cwd=self.run_dir)
-    return True
+    return self.run_xrun(args)
 
   def sim_xrun(self) -> bool:
     sim_opts  = self.extract_sim_opts()[1]
@@ -450,12 +461,10 @@ class xcelium(HammerSimTool, CadenceTool):
     arg_file_path = self.generate_arg_file("xrun_sim.arg", "HAMMER-GEN XRUN SIM ARG FILE", [sim_cmd_opts],
                                            sim_opt_removal = sim_opts_removal,
                                            xrun_opt_removal = xrun_opts_removal)    
-    args =[self.xcelium_bin]
-    args.append(f"-R -f {arg_file_path} -input {self.sim_tcl_file}")
+    args = [self.xcelium_bin, "-R", "-f", arg_file_path, "-input", self.sim_tcl_file]
 
     self.generate_sim_tcl() 
     self.update_submit_options()
-    self.run_executable(args, cwd=self.run_dir)
-    return True
+    return self.run_xrun(args)
 
 tool = xcelium
