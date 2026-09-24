@@ -448,22 +448,26 @@ class xcelium(HammerSimTool, CadenceTool):
     return self.run_xrun(args)
 
   def sim_xrun(self) -> bool:
-    sim_opts  = self.extract_sim_opts()[1]
-    sim_cmd_opts = self.get_setting(f"{self.sim_input_prefix}.options", [])
-    sim_opts_removal  = ["tb_name", "input_files", "incdir"]
-    xrun_opts_removal = ["enhanced_recompile", "mce"]
-    sim_cmd_opts = ('SIMULATION', sim_cmd_opts)
-    
-    if not sim_opts["execute_sim"]:
-      self.logger.warning("Not running any simulations because sim.inputs.execute_sim is unset.")
+    if not self.get_setting("sim.inputs.execute_sim"):
+      self.logger.info("Skipping simulation (sim.inputs.execute_sim is false).")
       return True
-    
-    arg_file_path = self.generate_arg_file("xrun_sim.arg", "HAMMER-GEN XRUN SIM ARG FILE", [sim_cmd_opts],
-                                           sim_opt_removal = sim_opts_removal,
-                                           xrun_opt_removal = xrun_opts_removal)    
-    args = [self.xcelium_bin, "-R", "-f", arg_file_path, "-input", self.sim_tcl_file]
-
-    self.generate_sim_tcl() 
+    benchmarks = self.get_setting("sim.inputs.benchmarks")
+    if len(benchmarks) > 1:
+      raise ValueError("Run one Xcelium benchmark per run directory")
+    self.generate_sim_tcl()
+    # Runtime must not reuse compile/elaboration arguments (sources, -Wcxx, etc.).
+    args = [self.xcelium_bin] + self.get_setting("sim.inputs.execution_flags_prepend")
+    args.extend(["-R", "-64bit", "-input", self.sim_tcl_file,
+                 "-l", os.path.join(self.run_dir, "xrun_sim.log")])
+    for key in ("xmlibdirname", "xmlibdirpath", "snapshot", "simtmp"):
+      value = self.get_setting("sim.xcelium." + key)
+      if value:
+        args.extend(["-" + key, value])
+    args.extend(self.get_setting("sim.inputs.options") or [])
+    args.extend(self.get_setting("sim.inputs.execution_flags"))
+    args.extend(self.get_setting("sim.inputs.execution_flags_append"))
+    # A bare ELF path is interpreted by xrun as a source; FESVR accepts this plusarg.
+    args.extend("+target-argument=" + os.path.abspath(binary) for binary in benchmarks)
     self.update_submit_options()
     return self.run_xrun(args)
 
