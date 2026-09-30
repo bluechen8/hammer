@@ -258,7 +258,7 @@ class SKY130Tech(HammerTechnology):
             # The cadence PDK (as of version 0.0.3) doesn't seem to have tap nor decap cells, so par won't run (and if we forced it to, lvs would fail)
             spcl_cells = [
                 SpecialCell(
-                    cell_type=CellType("stdfiller"), name=["FILL1", "FILL2", "FILL4", "FILL8", "FILL16"]
+                    cell_type=CellType("stdfiller"), name=["FILL1", "FILL2", "FILL4", "FILL8", "FILL16", "FILL32", "FILL64"]
                 ),
                 SpecialCell(
                     cell_type=CellType("decap"),
@@ -836,12 +836,42 @@ class SKY130Tech(HammerTechnology):
                 ]
                 sl[start[0] + 1] = sl[start[0] + 1].replace("AREAIO", "SPACER")
 
+                # Add antenna gate area annotation to PIN OUT.
+                # The previous implementation called str.replace() without
+                # assigning its return value, so the LEF was never modified.
+                antenna_count = 0
                 for idx, line in enumerate(sl):
-                    if "PIN OUT" in line:
-                        sl[idx + 1].replace(
-                            "DIRECTION INPUT ;",
-                            "DIRECTION INPUT ;\n    ANTENNAGATEAREA 1.529 LAYER met3 ;",
-                        )
+                    if line.strip() != "PIN OUT":
+                        continue
+
+                    # Find the end of this PIN block.
+                    pin_end = idx + 1
+                    while pin_end < len(sl) and sl[pin_end].strip() != "END OUT":
+                        pin_end += 1
+
+                    for direction_idx in range(idx + 1, pin_end):
+                        if sl[direction_idx].strip() == "DIRECTION INPUT ;":
+                            indent = sl[direction_idx][
+                                : len(sl[direction_idx]) - len(sl[direction_idx].lstrip())
+                            ]
+                            # Don't add a duplicate if the source LEF already has one.
+                            already_has_antenna = any(
+                                "ANTENNAGATEAREA 1.529 LAYER met3 ;" in sl[n]
+                                for n in range(direction_idx + 1, pin_end)
+                            )
+                            if not already_has_antenna:
+                                sl[direction_idx] = (
+                                    f"{indent}DIRECTION INPUT ;\n"
+                                    f"{indent}ANTENNAGATEAREA 1.529 LAYER met3 ;\n"
+                                )
+                                antenna_count += 1
+                            break
+
+                self.logger.info(
+                    "IO LEF: added ANTENNAGATEAREA to {} PIN OUT entries".format(
+                        antenna_count
+                    )
+                )
 
                 df.writelines(sl)
 
