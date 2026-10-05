@@ -45,3 +45,5 @@ par.innovus:
   # Should only be run at the very end, as runtime impact is significant.
   # Requires the same version of Tempus to be installed at ${cadence.cadence_home}/SSV/SSV${par.innovus.bin}/bin
   signoff: false
+
+  qrc_layer_map: null

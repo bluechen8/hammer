@@ -1,0 +1,27 @@
+# LEF/DEF <-> Quantus QRC tech file layer name map for sky130.
+#
+# The Cadence sky130 PDK QRC tech file
+# (${technology.sky130.sky130_cds}/.../quantus/extraction/<corner>/qrcTechFile)
+# names its process layers after the "pro_layer"/"pro_cont" entries in the
+# accompanying layer_setup file. Those names do not match the LEF names:
+#
+#   LEF          QRC tech file
+#   li1          li
+#   met1..met5   metal1..metal5
+#   via          via1
+
+extraction_setup \
+-technology_layer_map \
+poly poly \
+diff diff \
+li1 li \
+mcon mcon \
+met1 metal1 \
+via via1 \
+met2 metal2 \
+via2 via2 \
+met3 metal3 \
+via3 via3 \
+met4 metal4 \
+via4 via4 \
+met5 metal5
