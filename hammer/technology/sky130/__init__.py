@@ -16,6 +16,7 @@ from hammer.tech import (
     Corner,
     Decimal,
     DRCDeck,
+    ExtraLibrary,
     HammerTechnology,
     Library,
     LVSDeck,
@@ -657,6 +658,15 @@ class SKY130Tech(HammerTechnology):
             )
             libs.append(lib_entry)
 
+        # Neither PDK IO Verilog file is usable for simulation as shipped:
+        # sky130_ef_io.v does not compile, and sky130_fd_io.v corrupts its pad
+        # outputs to X (see extra/sim/README.md). Simulation-only replacements
+        # live in extra/sim/ and are named after the file they stand in for.
+        sim_model_dir = os.path.join(os.path.dirname(__file__), "extra", "sim")
+        for lib in libs:
+            if lib.verilog_sim and os.path.basename(lib.verilog_sim) in ("sky130_fd_io.v", "sky130_ef_io.v"):
+                lib.verilog_sim = os.path.join(sim_model_dir, os.path.basename(lib.verilog_sim))
+
         self.config = TechJSON(
             name="Skywater 130nm Library",
             grid_unit="0.001",
@@ -685,6 +695,48 @@ class SKY130Tech(HammerTechnology):
         self.library_name = slib
         
     
+    def get_extra_libraries(self) -> List[ExtraLibrary]:
+        """Redirect the Caravel POR macro at our own simulation model.
+
+        Designs on a Caravel-style pad ring declare simple_por in
+        vlsi.technology.extra_libraries, because the macro is not part of the
+        sky130 PDK proper. The behavioral model Caravel ships with it cannot be
+        simulated as instantiated, for three independent reasons:
+
+          * It references vdd3v3 inside `always @(posedge vdd3v3)` but only
+            declares it under `ifdef USE_POWER_PINS, and the file sets
+            `default_nettype none -- so without the define it does not compile.
+          * With the define it still does not work: designs connect only the
+            three signal ports, so vdd3v3 sits at Z, there is never a posedge,
+            and porb_h stays low forever. porb_h drives ENABLE_H on every IO
+            cell, so the whole pad ring would be held disabled.
+          * It instantiates sky130_fd_sc_hvl__schmittbuf_1 and
+            sky130_fd_sc_hvl__lsbufhv2lv_1, which would require the hvl library
+            models in the liblist as well.
+
+        extra/sim/simple_por.v reproduces the model's polarity and 500 ns POR
+        ramp over just the three signal ports. Redirecting here rather than in
+        the design config keeps the path out of user YAML and applies it to
+        every flow step, including `redo-` steps replaying an older config
+        snapshot.
+
+        Narrowly matched -- lib_type "por" whose verilog_sim is the PDK's
+        simple_por.v -- so a design supplying a working model of its own, or a
+        different POR macro, is left alone.
+        """
+        libs = super().get_extra_libraries()
+        model = os.path.join(
+            os.path.dirname(__file__), "extra", "sim", "simple_por.v"
+        )
+        for extra_lib in libs:
+            lib = extra_lib.library
+            provides_por = any(
+                p.lib_type == "por" for p in (lib.provides or [])
+            )
+            if provides_por and os.path.basename(lib.verilog_sim or "") == "simple_por.v":
+                lib.verilog_sim = model
+        return libs
+
     def post_install_script(self) -> None:
         # check whether variables were overriden to point to a valid path
         if self.get_setting("technology.sky130.stdcell_library") == "sky130_fd_sc_hd":
