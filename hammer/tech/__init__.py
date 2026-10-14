@@ -356,8 +356,8 @@ class HammerTechnology:
                 if "file" in field_name or "path" in field_name or field_name == "verilog_sim":
                     # check if that file exists in cache, override if so
                     default_path = getattr(lib, field_name)
-                    if not default_path:
-                        continue
+                    if not isinstance(default_path, str) or not default_path:
+                        continue  # unset, or a struct such as spice_model_file
                     new_path = default_path
                     fname = os.path.basename(default_path)
                     fnames = [fname, fname.replace(".spice", ".cdl"), fname.replace(".cdl", ".spice")]
@@ -385,10 +385,10 @@ class HammerTechnology:
 
                     setattr(lib, field_name, new_path)
         # do logging at the end to prevent spamming stdout with the same overrides
-        for field, new_path in used_overrides.items():
-            override_type = "manual" if new_path[1] else "cache"
+        for field, override in used_overrides.items():
+            override_type = "manual" if override[1] else "cache"
             self.logger.info( 
-                f"Overriding {field[0]} {field[1]} with {override_type} path {new_path[0]}"
+                f"Overriding {field[0]} {field[1]} with {override_type} path {override[0]}"
             )
         unused_overrides = [k for k in manual_overrides.keys() if k not in used_overrides]
         if unused_overrides:
@@ -1509,7 +1509,32 @@ class LibraryFilterHolder:
     @property
     def spice_filter(self) -> LibraryFilter:
         """
-        Select SPICE files.
+        Select SPICE files, except those of libraries that provide lib_type "pg_characterization"
+        (netlists only for PG-library characterization, e.g. of physical-only cells that the
+        design netlists exclude; see pg_characterization_spice_filter).
+        """
+
+        def filter_func(lib: Library) -> bool:
+            return lib.spice_file is not None and not any(
+                p.lib_type == "pg_characterization" for p in lib.provides or [])
+
+        def paths_func(lib: Library) -> List[str]:
+            assert lib.spice_file is not None
+            return [lib.spice_file]
+
+        return LibraryFilter(
+            tag="spice",
+            description="SPICE files",
+            is_file=True,
+            filter_func=filter_func,
+            paths_func=paths_func
+        )
+
+    @property
+    def pg_characterization_spice_filter(self) -> LibraryFilter:
+        """
+        Select SPICE files for PG-library characterization: all of them, including those of
+        libraries that provide lib_type "pg_characterization".
         """
 
         def filter_func(lib: Library) -> bool:
@@ -1520,8 +1545,8 @@ class LibraryFilterHolder:
             return [lib.spice_file]
 
         return LibraryFilter(
-            tag="spice",
-            description="SPICE files",
+            tag="pg_characterization_spice",
+            description="SPICE files for PG-library characterization",
             is_file=True,
             filter_func=filter_func,
             paths_func=paths_func

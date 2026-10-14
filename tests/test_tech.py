@@ -136,6 +136,48 @@ class TestHammerTechnology(HasGetTech):
                                               output_func=lambda s, _: [s])
         assert outputs == ["{0}/abcdef.gds".format(tech_dir)]
 
+    def test_pg_characterization_spice_filter(self, tmpdir, request) -> None:
+        """
+        Test that spice_filter skips libraries that provide lib_type "pg_characterization"
+        (netlists only for PG-library characterization), and that
+        pg_characterization_spice_filter selects them too.
+        """
+        import hammer.config as hammer_config
+
+        tech_dir_base = str(tmpdir)
+        tech_name = request.function.__name__  # create unique technology folders for each test
+        tech_dir = HammerToolTestHelpers.create_tech_dir(tech_dir_base, tech_name)
+        tech_json_filename = os.path.join(tech_dir, f"{tech_name}.tech.json")
+
+        def add_spice(in_dict: Dict[str, Any]) -> Dict[str, Any]:
+            out_dict = deepdict(in_dict)
+            out_dict["libraries"].append({
+                "name": "cells",
+                "spice_file": "cells.cdl"
+            })
+            out_dict["libraries"].append({
+                "name": "decaps",
+                "spice_file": "decaps.cdl",
+                "provides": [{"lib_type": "pg_characterization"}]
+            })
+            return out_dict
+
+        HammerToolTestHelpers.write_tech_json(tech_json_filename, tech_name, add_spice)
+        sys.path.append(tech_dir_base)
+        for netlist in ("cells.cdl", "decaps.cdl"):
+            (pathlib.Path(tech_dir) / netlist).write_text("netlist")
+
+        tech = self.get_tech(hammer_tech.HammerTechnology.load_from_module(tech_name))
+        tech.cache_dir = tech_dir
+        tech.set_database(hammer_config.HammerDatabase())
+
+        def spice_files(filt: LibraryFilter) -> List[str]:
+            return tech.process_library_filter(pre_filts=[], filt=filt, must_exist=False,
+                                               output_func=lambda s, _: [os.path.basename(s)])
+
+        assert spice_files(hammer_tech.filters.spice_filter) == ["cells.cdl"]
+        assert spice_files(hammer_tech.filters.pg_characterization_spice_filter) == ["cells.cdl", "decaps.cdl"]
+
     @staticmethod
     def add_tarballs(tech_name: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """

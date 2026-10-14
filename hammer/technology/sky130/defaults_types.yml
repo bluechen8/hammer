@@ -12,12 +12,15 @@ technology.sky130:
   sky130_nda: str
 
   # This contains the Cadence PDK
-  # this key is OPTIONAL, and is only required if you are running Pegasus DRC/LVS.
+  # this key is OPTIONAL, and is only required if you are running Pegasus DRC/LVS, or Voltus
+  # PG-library generation for sky130_scl (its Spice models).
   sky130_cds: str
 
   # This contains the Cadence standard cell library
   # this key is OPTIONAL, and is only required if you want to do Voltus IR drop analysis.
   sky130_scl: str
+  # Extra SPICE/CDL netlists for sky130_scl cells without one (e.g. FILL_DECAP8/16)
+  sky130_scl_extra_spice: list[str]
 
   # RAM paths
   # OpenRAM
