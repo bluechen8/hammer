@@ -1434,7 +1434,32 @@ class LibraryFilterHolder:
     @property
     def spice_filter(self) -> LibraryFilter:
         """
-        Select SPICE files.
+        Select SPICE files, except those of libraries that provide lib_type "pg_characterization"
+        (netlists only for PG-library characterization, e.g. of physical-only cells that the
+        design netlists exclude; see pg_characterization_spice_filter).
+        """
+
+        def filter_func(lib: Library) -> bool:
+            return lib.spice_file is not None and not any(
+                p.lib_type == "pg_characterization" for p in lib.provides or [])
+
+        def paths_func(lib: Library) -> List[str]:
+            assert lib.spice_file is not None
+            return [lib.spice_file]
+
+        return LibraryFilter(
+            tag="spice",
+            description="SPICE files",
+            is_file=True,
+            filter_func=filter_func,
+            paths_func=paths_func
+        )
+
+    @property
+    def pg_characterization_spice_filter(self) -> LibraryFilter:
+        """
+        Select SPICE files for PG-library characterization: all of them, including those of
+        libraries that provide lib_type "pg_characterization".
         """
 
         def filter_func(lib: Library) -> bool:
@@ -1445,8 +1470,8 @@ class LibraryFilterHolder:
             return [lib.spice_file]
 
         return LibraryFilter(
-            tag="spice",
-            description="SPICE files",
+            tag="pg_characterization_spice",
+            description="SPICE files for PG-library characterization",
             is_file=True,
             filter_func=filter_func,
             paths_func=paths_func

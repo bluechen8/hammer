@@ -24,6 +24,7 @@ from hammer.tech import (
     PathPrefix,
     Provide,
     Site,
+    SpiceModelFile,
     Stackup,
     Supplies,
     TechJSON,
@@ -559,6 +560,16 @@ class SKY130Tech(HammerTechnology):
                     libs.append(lib_entry)
                     
                 elif slib == "sky130_scl":
+                    # Cadence PDK transistor models (.lib section per corner) for the SCL
+                    # netlists, used by Spectre to characterize Voltus PG views
+                    spice_model_file = None
+                    scl_models = os.path.join(SKY130_CDS, "models", "sky130.lib.spice")
+                    if library == "sky130_scl_9T" and os.path.exists(scl_models):
+                        spice_model_file = SpiceModelFile(
+                            path=scl_models,
+                            lib_corner={"fast": "ff", "typical": "tt", "slow": "ss"}[speed],
+                        )
+
                     lib_entry = Library(
                         nldm_liberty_file=os.path.join(
                             library_base_path, "lib", cornerfilename
@@ -574,13 +585,29 @@ class SKY130Tech(HammerTechnology):
                             else os.path.join(library_base_path, "lef", library + ".lef")
                         ), # we modify sky130_ef_io.lef in setup_io_lefs(), so use the modified version if we are adding sky130_ef_io collateral
                         spice_file=netlist_path,
+                        spice_model_file=spice_model_file,
                         gds_file=os.path.join(library_base_path, "gds", library + ".gds"),
                         corner=Corner(nmos=speed, pmos=speed, temperature=temp),
                         supplies=Supplies(VDD=vdd, GND="0 V"),
                         provides=[Provide(lib_type="stdcell", vt="RVT")], # RVT = SVT
                     )
                     libs.append(lib_entry)
-                
+
+                    if library == "sky130_scl_9T":
+                        # Netlists for SCL cells the vendor CDL lacks, per corner with the same models.
+                        # Only for PG-library characterization: these are physical-only cells, so LVS
+                        # and the other design netlist consumers must not read them.
+                        libs += [
+                            Library(
+                                spice_file=path,
+                                spice_model_file=spice_model_file,
+                                corner=Corner(nmos=speed, pmos=speed, temperature=temp),
+                                supplies=Supplies(VDD=vdd, GND="0 V"),
+                                provides=[Provide(lib_type="pg_characterization")],
+                            )
+                            for path in self.get_setting("technology.sky130.sky130_scl_extra_spice") or []
+                        ]
+
                 if "sky130_fd_io" in library_base_path: # ex: /scratch/jfx/open-pdks/sky130/sky130A/libs.ref/sky130_fd_io
                     # these are seperate from the io gds
                     # the story is:

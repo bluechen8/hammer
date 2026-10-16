@@ -12,11 +12,14 @@ technology.sky130:
   sky130_nda: str
 
   # This contains the Cadence PDK
-  # this key is OPTIONAL, and is only required if you are running Pegasus DRC/LVS.
+  # this key is OPTIONAL, and is only required if you are running Pegasus DRC/LVS, or Voltus
+  # PG-library generation for sky130_scl (its Spice models).
   sky130_cds: str
   drc_deck: str
   lvs_deck: str
   pegasus_drc_rules_dir: str
+  # Extra SPICE/CDL netlists for sky130_scl cells without one (e.g. FILL_DECAP8/16)
+  sky130_scl_extra_spice: list[str]
 
   # RAM paths
   # OpenRAM
