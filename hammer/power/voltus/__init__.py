@@ -2,7 +2,7 @@
 #
 #  See LICENSE for licence details.
 
-from typing import List, Dict, Optional, Callable, cast
+from typing import List, Dict, Optional, Callable, Tuple, cast
 
 import os
 import json
@@ -127,11 +127,69 @@ class Voltus(HammerPowerTool, CadenceTool):
                                                  self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)])
 
     def get_mmmc_spice_corners(self, corner: MMMCCorner) -> List[str]:
-        return self.technology.read_libs([hammer_tech.filters.spice_model_lib_corner_filter],
-                                             hammer_tech.HammerTechnologyUtils.to_plain_item,
-                                             extra_pre_filters=[
-                                                 self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)],
-                                             must_exist=False)
+        # SPICE .lib section names are metadata, not filesystem paths.
+        match = self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp)
+        return list(dict.fromkeys(lib.spice_model_file.lib_corner
+                    for lib in self.technology.get_available_libraries()
+                    if match(lib) and lib.spice_model_file and lib.spice_model_file.lib_corner))
+
+    def analysis_corners(self) -> List[MMMCCorner]:
+        """MMMC corners that power and rail report on, and that PG libraries are generated for:
+        only the extra corners if power.inputs.extra_corners_only. Empty in non-MMMC mode."""
+        corners = self.get_mmmc_corners()
+        if self.extra_corners_only:
+            extra_corners = [c for c in corners if c.type is MMMCCornerType.Extra]
+            if not corners:
+                self.logger.warning("power.inputs.extra_corners_only not valid in non-MMMC mode! Using the default analysis view only.")
+            elif not extra_corners:
+                self.logger.warning("power.inputs.extra_corners_only is true but no extra MMMC corners specified! Ignoring.")
+            else:
+                corners = extra_corners
+        return corners
+
+    @staticmethod
+    def view_name(corner: MMMCCorner) -> str:
+        """Analysis view that init_design creates for an MMMC corner."""
+        if corner.type is MMMCCornerType.Setup:
+            return "{c}.setup_view".format(c=corner.name)
+        elif corner.type is MMMCCornerType.Hold:
+            return "{c}.hold_view".format(c=corner.name)
+        elif corner.type is MMMCCornerType.Extra:
+            return "{c}.extra_view".format(c=corner.name)
+        raise ValueError("Unsupported MMMCCornerType")
+
+    def stdcell_pgv_spice(self, corner: Optional[MMMCCorner]) -> Tuple[List[str], List[str], List[str]]:
+        """Spice models, model sections (.lib corners) and netlists for characterizing the stdcell
+        PG library of one corner (None in non-MMMC mode). Only netlists of tech libraries that
+        declare Spice models are used, since Spectre must find a model for every device; other
+        tech netlists (e.g. IO cells or SRAM macros in another device family) are left out."""
+        filters = self.tech_lib_filter() + [lambda lib: lib.spice_model_file is not None]
+        if corner is not None:
+            filters.append(self.filter_for_mmmc(voltage=corner.voltage, temp=corner.temp))
+        to_item = hammer_tech.HammerTechnologyUtils.to_plain_item
+        models = self.technology.read_libs([hammer_tech.filters.spice_model_file_filter], to_item, filters)
+        netlists = self.technology.read_libs([hammer_tech.filters.pg_characterization_spice_filter], to_item, filters)
+        sections = list(dict.fromkeys(lib.spice_model_file.lib_corner  # type: ignore[union-attr]
+                        for lib in self.technology.get_available_libraries()
+                        if all(f(lib) for f in filters) and lib.spice_model_file.lib_corner))  # type: ignore[union-attr]
+        return models, sections, netlists
+
+    def pg_libraries(self, corner: Optional[MMMCCorner]) -> List[str]:
+        """PG libraries of one corner (None in non-MMMC mode): the ones the libraries provide plus
+        the ones init_technology generated (by a separate Voltus run before the power script, so
+        they need not exist yet)."""
+        if corner is None:
+            pg_libs = self.technology.read_libs([hammer_tech.filters.power_grid_library_filter], hammer_tech.HammerTechnologyUtils.to_plain_item)
+            corner_dir = ""
+        else:
+            pg_libs = self.get_mmmc_pgv(corner)
+            corner_dir = corner.name
+        if self.ran_tech_stdcell_pgv:
+            pg_libs.append(os.path.join(self.tech_lib_dir, corner_dir, "techonly.cl"))
+            pg_libs.append(os.path.join(self.stdcell_lib_dir, corner_dir, "stdcells.cl"))
+        if self.ran_macro_pgv:
+            pg_libs.extend(os.path.join(self.macro_lib_dir, corner_dir, "macros_{}.cl".format(m)) for m in self.macro_pgv_cells)
+        return pg_libs
 
     @property
     def steps(self) -> List[HammerToolStep]:
@@ -155,10 +213,11 @@ class Voltus(HammerPowerTool, CadenceTool):
 
 
     def init_technology(self) -> bool:
-        corners = self.get_mmmc_corners()
+        corners = self.analysis_corners()
 
         # Options for set_pg_library_mode
-        base_options = ["-enable_distributed_processing", "true"]  # type: List[str]
+        distributed = "true" if self.get_setting("power.voltus.pgv_distributed_processing") else "false"
+        base_options = ["-enable_distributed_processing", distributed]  # type: List[str]
         if self.get_setting("power.voltus.lef_layer_map"):
             base_options.extend(["-lef_layer_map", self.get_setting("power.voltus.lef_layer_map")])
 
@@ -183,7 +242,6 @@ class Voltus(HammerPowerTool, CadenceTool):
             # fillers, decaps
             stdfillers = self.technology.get_special_cell_by_type(CellType.StdFiller)
             decaps = self.technology.get_special_cell_by_type(CellType.Decap)
-            tech_lib_sp = self.technology.read_libs([hammer_tech.filters.spice_filter], hammer_tech.HammerTechnologyUtils.to_plain_item, self.tech_lib_filter())
 
             if not corners:
                 # Start with tech-only library
@@ -203,10 +261,12 @@ class Voltus(HammerPowerTool, CadenceTool):
                 if len(decaps) > 0:
                     decaps_names = list(map(lambda d: str(d), decaps[0].name))
                     options.extend(["-decap_cells", "{{ {} }}".format(" ".join(decaps_names))])
-                spice_models = self.technology.read_libs([hammer_tech.filters.spice_model_file_filter], hammer_tech.HammerTechnologyUtils.to_plain_item)
-                spice_corners = self.technology.read_libs([hammer_tech.filters.spice_model_lib_corner_filter], hammer_tech.HammerTechnologyUtils.to_plain_item)
+                spice_models, spice_corners, tech_lib_sp = self.stdcell_pgv_spice(None)
                 if len(spice_models) == 0:
                     self.logger.error("Must specify Spice model files in tech plugin to generate stdcell PG libraries! Skipping.")
+                    return True
+                elif len(spice_corners) > 1:
+                    self.logger.error("Spice model corners {} are ambiguous without MMMC corners; cannot generate stdcell PG libraries! Skipping.".format(" ".join(spice_corners)))
                     return True
                 else:
                     options.extend(["-spice_models", "{", " ".join(spice_models), "}"])
@@ -240,8 +300,7 @@ class Voltus(HammerPowerTool, CadenceTool):
                     if len(decaps) > 0:
                         decaps_names = list(map(lambda d: str(d), decaps[0].name))
                         options.extend(["-decap_cells", "{{ {} }}".format(" ".join(decaps_names))])
-                    spice_models = self.get_mmmc_spice_models(corner)
-                    spice_corners = self.get_mmmc_spice_corners(corner)
+                    spice_models, spice_corners, tech_lib_sp = self.stdcell_pgv_spice(corner)
                     if len(spice_models) == 0:
                         self.logger.error("Must specify Spice model files in tech plugin to generate stdcell PG libraries! Skipping.")
                         return True
@@ -465,7 +524,26 @@ class Voltus(HammerPowerTool, CadenceTool):
             ))
             verbose_append("read_spef " + os.path.join(os.getcwd(), self.spefs[0]))
 
+
+        # Give power analysis the PG libraries: the rail takes decap (intrinsic) capacitance from
+        # the power run's per-instance data, so without them it sees none. Voltus takes one global
+        # list, so the first analysis corner's libraries are used.
+        corners = self.analysis_corners()
+        pg_libs = self.pg_libraries(corners[0] if corners else None)
+        if pg_libs:
+            verbose_append("set_db power_grid_libraries {{ {} }}".format(" ".join(pg_libs)))
+            decaps = self.technology.get_special_cell_by_type(CellType.Decap)
+            if decaps:
+                verbose_append("set_db power_decap_cell_list {{ {} }}".format(" ".join(map(str, decaps[0].name))))
+
         return True
+
+    def report_power(self, corners: List[MMMCCorner], out_dir: str) -> None:
+        """report_power into <out_dir>.<view> per analysis corner, or <out_dir> in non-MMMC mode."""
+        if not corners:
+            self.verbose_append("report_power -out_dir {}".format(out_dir))
+        for corner in corners:
+            self.verbose_append("report_power -view {VIEW} -out_dir {DIR}.{VIEW}".format(VIEW=self.view_name(corner), DIR=out_dir))
 
     def static_power(self) -> bool:
         verbose_append = self.verbose_append
@@ -473,66 +551,19 @@ class Voltus(HammerPowerTool, CadenceTool):
         verbose_append("set_db power_method static")
         verbose_append("set_db power_write_static_currents true")
         verbose_append("set_db power_write_db true")
-
-        # Report based on MMMC mode
-        corners = self.get_mmmc_corners()
-        if not corners:
-            if self.extra_corners_only:
-                self.logger.warning("power.inputs.extra_corners_only not valid in non-MMMC mode! Reporting static power for default analysis view only.")
-            verbose_append("report_power -out_dir staticPowerReports")
-        else:
-            if self.extra_corners_only:
-                extra_corners = list(filter(lambda c: c.type is MMMCCornerType.Extra, corners))
-                if len(extra_corners) == 0:
-                    self.logger.warning("power.inputs.extra_corners_only is true but no extra MMMC corners specified! Ignoring for static power.")
-                else:
-                    corners = extra_corners
-            for corner in corners:
-                # Setting up views for all defined corner types: setup, hold, extra
-                if corner.type is MMMCCornerType.Setup:
-                    view_name = "{c}.setup_view".format(c=corner.name)
-                elif corner.type is MMMCCornerType.Hold:
-                    view_name = "{c}.hold_view".format(c=corner.name)
-                elif corner.type is MMMCCornerType.Extra:
-                    view_name = "{c}.extra_view".format(c=corner.name)
-                else:
-                    raise ValueError("Unsupported MMMCCornerType")
-                verbose_append("report_power -view {VIEW} -out_dir staticPowerReports.{VIEW}".format(VIEW=view_name))
+        self.report_power(self.analysis_corners(), "staticPowerReports")
 
         return True
 
     def active_power(self) -> bool:
         verbose_append = self.verbose_append
+        corners = self.analysis_corners()
 
         # Active Vectorless Power Analysis
         verbose_append("set_db power_method dynamic_vectorless")
         # TODO (daniel) add the resolution as an option?
         verbose_append("set_dynamic_power_simulation -resolution 500ps")
-
-        # Check MMMC mode
-        corners = self.get_mmmc_corners()
-        if not corners:
-            if self.extra_corners_only:
-                self.logger.warning("power.inputs.extra_corners_only not valid in non-MMMC mode! Reporting active power for default analysis view only.")
-            verbose_append("report_power -out_dir activePowerReports")
-        else:
-            if self.extra_corners_only:
-                extra_corners = list(filter(lambda c: c.type is MMMCCornerType.Extra, corners))
-                if len(extra_corners) == 0:
-                    self.logger.warning("power.inputs.extra_corners_only is true but no extra MMMC corners specified! Ignoring for active power.")
-                else:
-                    corners = extra_corners
-            for corner in corners:
-                # Setting up views for all defined corner types: setup, hold, extra
-                if corner.type is MMMCCornerType.Setup:
-                    view_name = "{c}.setup_view".format(c=corner.name)
-                elif corner.type is MMMCCornerType.Hold:
-                    view_name = "{c}.hold_view".format(c=corner.name)
-                elif corner.type is MMMCCornerType.Extra:
-                    view_name = "{c}.extra_view".format(c=corner.name)
-                else:
-                    raise ValueError("Unsupported MMMCCornerType")
-                verbose_append("report_power -view {VIEW} -out_dir activePowerReports.{VIEW}".format(VIEW=view_name))
+        self.report_power(corners, "activePowerReports")
 
         # TODO (daniel) deal with different tb/dut hierarchies
         tb_name = self.get_setting("power.inputs.tb_name")
@@ -558,55 +589,30 @@ class Voltus(HammerPowerTool, CadenceTool):
             if waveform_format_map.get(waveform_ext) is None:
                 self.logger.error("Only VCD/VPD, FSDB, and SHM waveform formats supported.")
             verbose_append("read_activity_file -reset -format {FORMAT} {WAVEFORM_PATH} -start {stime}ns -end {etime}ns -scope {TESTBENCH}".format(FORMAT=waveform_format_map.get(waveform_ext), WAVEFORM_PATH=os.path.join(os.getcwd(), waveform_path), TESTBENCH=tb_scope, stime=stime_ns, etime=etime_ns))
-            waveform_file = os.path.basename(waveform_path)
-            # Report based on MMMC mode
-            if not corners:
-                verbose_append("report_power -out_dir activePower.{WAVEFORM_FILE}".format(WAVEFORM_FILE=waveform_file))
-            else:
-                for corner in corners:
-                    # Setting up views for all defined corner types: setup, hold, extra
-                    if corner.type is MMMCCornerType.Setup:
-                        view_name = "{c}.setup_view".format(c=corner.name)
-                    elif corner.type is MMMCCornerType.Hold:
-                        view_name = "{c}.hold_view".format(c=corner.name)
-                    elif corner.type is MMMCCornerType.Extra:
-                        view_name = "{c}.extra_view".format(c=corner.name)
-                    else:
-                        raise ValueError("Unsupported MMMCCornerType")
-                    verbose_append("report_power -view {VIEW} -out_dir activePowerReports.{WAVEFORM_FILE}.{VIEW}".format(VIEW=view_name, WAVEFORM_FILE=waveform_file))
-
+            waveform_file = self.activity_name(waveform_path)
+            self.report_power(corners, "activePowerReports." + waveform_file)
             verbose_append("report_vector_profile -detailed_report true -out_file activePowerProfile.{WAVEFORM_FILE}".format(WAVEFORM_FILE=waveform_file))
 
         verbose_append("set_db power_method dynamic")
         for saif_path in self.saifs:
             verbose_append("set_dynamic_power_simulation -reset")
             verbose_append("read_activity_file -reset -format SAIF {SAIF_PATH} -scope {TESTBENCH}".format(SAIF_PATH=os.path.join(os.getcwd(), saif_path), TESTBENCH=tb_scope))
-            saif_file=".".join(saif_path.split('/')[-2:])
-            # Report based on MMMC mode
-            if not corners:
-                verbose_append("report_power -out_dir activePower.{SAIF_FILE}".format(SAIF_FILE=saif_file))
-            else:
-                for corner in corners:
-                    # Setting up views for all defined corner types: setup, hold, extra
-                    if corner.type is MMMCCornerType.Setup:
-                        view_name = "{c}.setup_view".format(c=corner.name)
-                    elif corner.type is MMMCCornerType.Hold:
-                        view_name = "{c}.hold_view".format(c=corner.name)
-                    elif corner.type is MMMCCornerType.Extra:
-                        view_name = "{c}.extra_view".format(c=corner.name)
-                    else:
-                        raise ValueError("Unsupported MMMCCornerType")
-                    verbose_append("report_power -view {VIEW} -out_dir activePowerReports.{SAIF_FILE}.{VIEW}".format(VIEW=view_name, SAIF_FILE=saif_file))
+            self.report_power(corners, "activePowerReports." + self.activity_name(saif_path, saif=True))
 
         return True
+
+    @staticmethod
+    def activity_name(path: str, saif: bool = False) -> str:
+        """Name of a waveform's (file name) or SAIF's (parent dir + file name) power and rail reports."""
+        return ".".join(path.split("/")[-2:]) if saif else os.path.basename(path)
 
     def rail_analysis(self, method: str, power_dir: str, output_dir: Optional[str] = None) -> bool:
         """
         Generic method for rail analysis
         params:
         - method: "static" or "dynamic"
-        - power_dir: relative path to static or active power current files
-        - output_dir: relative path to rail analysis output dir
+        - power_dir: relative path to static or active power current files (.<view> per MMMC corner)
+        - output_dir: relative path to rail analysis output dir (.<view> per MMMC corner)
         """
         verbose_append = self.verbose_append
 
@@ -628,78 +634,37 @@ class Voltus(HammerPowerTool, CadenceTool):
             "-verbosity", "true"
         ]
         if method == "static":
-            base_options.extend(["-enable_sensitivity_analysis", "true"])
+            # Voltus merges the PG libraries once per session, at the first report_rail (this static
+            # one), and later rails reuse that merge, so the static default -ignore_decaps true
+            # would leave every dynamic rail without decap capacitance.
+            base_options.extend(["-enable_sensitivity_analysis", "true", "-ignore_decaps", "false"])
+        else:
+            # Use every step of the power run's current profile.
+            base_options.extend(["-limit_number_of_steps", "false"])
+        base_options.extend(self.get_setting("power.voltus.rail_options"))
+        domain = self.get_setting("power.voltus.rail_domain")
 
         # TODO: Need combinations of all power nets + voltage domains
         pg_nets = self.get_all_power_nets() + self.get_all_ground_nets()
-        # Report based on MMMC corners
-        corners = self.get_mmmc_corners()
-        if not corners:
-            if self.extra_corners_only:
-                self.logger.warning("power.inputs.extra_corners_only not valid in non-MMMC mode! Reporting rail analysis for default analysis view only.")
-            options = base_options.copy()
-            pg_libs = self.technology.read_libs([hammer_tech.filters.power_grid_library_filter], hammer_tech.HammerTechnologyUtils.to_plain_item)
-            if self.ran_tech_stdcell_pgv:
-                pg_libs.append(os.path.join(self.tech_lib_dir, "techonly.cl"))
-                pg_libs.append(os.path.join(self.stdcell_lib_dir, "stdcells.cl"))
-            if self.ran_macro_pgv:
-                pg_libs.extend(list(map(lambda l: os.path.join(self.macro_lib_dir, "macros_{}.cl".format(l)), self.macro_pgv_cells)))
+        corners = list(self.analysis_corners()) or [None]  # type: List[Optional[MMMCCorner]]
+        for corner in corners:
+            pg_libs = self.pg_libraries(corner)
             if len(pg_libs) == 0:
                 self.logger.warning("No PG libraries are available! Rail analysis is skipped.")
                 return True
-            options.extend(["-power_grid_libraries", "{{ {} }}".format(" ".join(pg_libs))])
+            options = base_options + ["-power_grid_libraries", "{{ {} }}".format(" ".join(pg_libs))]
+            suffix = ""
+            if corner is not None:
+                view_name = self.view_name(corner)
+                options.extend(["-analysis_view", view_name, "-temperature", str(corner.temp.value)])
+                suffix = "." + view_name
             verbose_append("set_rail_analysis_config {}".format(" ".join(options)))
+            verbose_append("set_power_data -reset")
             # TODO: get nets and .ptiavg files using TCL from the .ptifiles file in the power reports directory
-            power_data = list(map(lambda n: "{POWER_DIR}/{METHOD}_{NET}.ptiavg".format(
-                POWER_DIR=power_dir,
-                METHOD=method,
-                NET=n.name), pg_nets))
+            power_data = ["{}{}/{}_{}.ptiavg".format(power_dir, suffix, method, n.name) for n in pg_nets]
             verbose_append("set_power_data -format current {{ {} }}".format(" ".join(power_data)))
-            verbose_append("report_rail -output_dir {} -type domain ALL".format(output_dir))
+            verbose_append("report_rail -output_dir {}{} -type domain {}".format(output_dir, suffix, domain))
             # TODO: Find highest run number, increment by 1 to enable reporting IRdrop regions
-        else:
-            if self.extra_corners_only:
-                extra_corners = list(filter(lambda c: c.type is MMMCCornerType.Extra, corners))
-                if len(extra_corners) == 0:
-                    self.logger.warning("power.inputs.extra_corners_only is true but no extra MMMC corners specified! Ignoring for rail analysis.")
-                else:
-                    corners = extra_corners
-            for corner in corners:
-                options = base_options.copy()
-                if corner.type is MMMCCornerType.Setup:
-                    view_name = corner.name + ".setup_view"
-                elif corner.type is MMMCCornerType.Hold:
-                    view_name = corner.name + ".hold_view"
-                elif corner.type is MMMCCornerType.Extra:
-                    view_name = corner.name + ".extra_view"
-                else:
-                    raise ValueError("Unsupported MMMCCornerType")
-                pg_libs = self.get_mmmc_pgv(corner)
-                if self.ran_tech_stdcell_pgv:
-                    pg_libs.append(os.path.join(self.tech_lib_dir, corner.name, "techonly.cl"))
-                    pg_libs.append(os.path.join(self.stdcell_lib_dir, corner.name, "stdcells.cl"))
-                if self.ran_macro_pgv:
-                    pg_libs.extend(list(map(lambda l: os.path.join(self.macro_lib_dir, corner.name, "macros_{}.cl".format(l)), self.macro_pgv_cells)))
-                if len(pg_libs) == 0:
-                    self.logger.warning("No PG libraries are available! Rail analysis is skipped.")
-                    return True
-
-                options.extend([
-                    "-power_grid_libraries", "{{ {} }}".format(" ".join(pg_libs)),
-                    "-analysis_view", view_name,
-                    "-temperature", str(corner.temp.value)
-                ])
-                verbose_append("set_rail_analysis_config {}".format(" ".join(options)))
-                verbose_append("set_power_data -reset")
-                # TODO: get nets and .ptiavg files using TCL from the .ptifiles file in the power reports directory
-                power_data = list(map(lambda n: "{POWER_DIR}.{VIEW}/{METHOD}_{NET}.ptiavg".format(
-                    POWER_DIR=power_dir,
-                    VIEW=view_name,
-                    METHOD=method,
-                    NET=n.name), pg_nets))
-                verbose_append("set_power_data -format current {{ {} }}".format(" ".join(power_data)))
-                verbose_append("report_rail -output_dir {} -type domain ALL".format(output_dir))
-                # TODO: Find highest run number, increment by 1 to enable reporting IRdrop regions
 
         return True
 
@@ -707,15 +672,14 @@ class Voltus(HammerPowerTool, CadenceTool):
         return self.rail_analysis("static", "staticPowerReports")
 
     def active_rail(self) -> bool:
+        passed = True
         # Vectorless database
-        passed = self.rail_analysis("dynamic", "activePowerReports", "activeRailReports")
-
+        if self.get_setting("power.voltus.rail_vectorless"):
+            passed &= self.rail_analysis("dynamic", "activePowerReports", "activeRailReports")
         # Vectorbased databases
-        for waveform_path in self.waveforms:
-            passed = self.rail_analysis("dynamic", "activePower." + os.path.basename(waveform_path), "activeRailReports." + os.path.basename(waveform_path))
-        for saif_path in self.saifs:
-            saif_file=".".join(saif_path.split('/')[-2:])
-            passed = self.rail_analysis("dynamic", "activePower." + saif_file, "activeRailReports." + saif_file)
+        for path, saif in [(w, False) for w in self.waveforms] + [(s, True) for s in self.saifs]:
+            name = self.activity_name(path, saif)
+            passed &= self.rail_analysis("dynamic", "activePowerReports." + name, "activeRailReports." + name)
         return passed
 
     def run_voltus(self) -> bool:

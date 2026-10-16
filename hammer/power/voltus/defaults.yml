@@ -22,6 +22,20 @@ power.voltus:
   # Each library is required to have a name. If the library has a power grid view provided, they are skipped.
   macro_pgv: true
 
+  # Characterize PG libraries with set_pg_library_mode -enable_distributed_processing.
+  # Distributed libGen workers are relaunched outside the Voltus process tree, so voltus_libsim
+  # can then only find a Spectre bundled under the Voltus install (VOLTUS_LSIM-5224 otherwise).
+  pgv_distributed_processing: true
+
   # Accuracy for rail analysis (choices are "xd" and "hd")
   # If left null, accuracy will be selected based on which PG views can be generated
   rail_accuracy: null
+
+  # Power domain the rails report on (report_rail -type domain <rail_domain>)
+  rail_domain: "ALL"
+
+  # Extra set_rail_analysis_config options for every rail, e.g. ["-ignore_shorts true"]
+  rail_options: []
+
+  # Also run the dynamic rail on the vectorless power run (the waveform/SAIF rails always run)
+  rail_vectorless: true
