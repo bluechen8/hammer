@@ -1547,12 +1547,15 @@ class SKY130Tech(HammerTechnology):
                     "generate_lvs_ctl_file", pegasus_lvs_add_130a_primitives
                 )
             )
+            if tool_name == "pegasus" and not self.get_setting("technology.sky130.lvs_blackbox_srams"):
+                self.logger.warning("Pegasus LVS: the sky130_fd_pr device map has no sram22 bitcell devices; "
+                                    "set technology.sky130.lvs_blackbox_srams: true, or sram22 cells will mismatch")
         hooks = {"calibre": calibre_hooks, "pegasus": pegasus_hooks}
         return hooks.get(tool_name, [])
 
 # =============================================================================================
 
-    # TODO(jimfang) these 2 are so hacked up...
+    # TODO(jimfang) this is so hacked up...
     @staticmethod
     def sky130_sram_names() -> List[str]:
         sky130_sram_names = []
@@ -1561,87 +1564,6 @@ class SKY130Tech(HammerTechnology):
         for d in dl:
             sky130_sram_names.append(d['name'])
         return sky130_sram_names
-
-    @staticmethod
-    def sky130_sram_primitive_names(
-        sky130a_path: str, misc_tapeout_collateral_path: str
-    ) -> List[str]:
-        spice_filenames = [
-            "sky130_fd_pr__pfet_01v8.pm3.spice",
-            "sky130_fd_pr__nfet_01v8.pm3.spice",
-            "sky130_fd_pr__pfet_01v8_hvt.pm3.spice",
-            "sky130_fd_pr__special_nfet_latch.pm3.spice",
-            "sky130_fd_pr__special_nfet_pass.pm3.spice",
-            "sky130_fd_pr__nfet_01v8_lvt.pm3.spice",
-            "sky130_fd_pr__nfet_g5v0d10v5.pm3.spice",
-            "sky130_fd_pr__pfet_g5v0d10v5.pm3.spice",
-            "sky130_fd_pr__nfet_05v0_nvt.pm3.spice",
-            "sky130_fd_pr__esd_nfet_g5v0d10v5.pm3.spice",
-            "sky130_fd_pr__cap_mim_m3_1.model.spice",
-            "sky130_fd_pr__cap_mim_m3_2.model.spice",
-        ]
-        spice_dir = Path(sky130a_path) / "libs.ref" / "sky130_fd_pr" / "spice"
-        pfet_latch_override = (
-            Path(misc_tapeout_collateral_path)
-            / "OPEN-PDKS-Modifications"
-            / "sky130_fd_pr"
-            / "sky130_fd_pr__special_pfet_latch.pm3.spice"
-        )
-        paths = [
-            str(
-                pfet_latch_override
-                if fname == pfet_latch_override.name
-                else spice_dir / fname
-            )
-            for fname in spice_filenames
-        ]
-        return paths
-
-    @staticmethod
-    def sky130_por_primitive_names(
-        sky130a_path: str, misc_tapeout_collateral_path: str
-    ) -> List[str]:
-        spice_dir = Path(sky130a_path) / "libs.ref" / "sky130_fd_pr" / "spice"
-        spice_filenames = [
-            "sky130_fd_pr__nfet_g5v0d10v5.pm3.spice",
-            "sky130_fd_pr__pfet_g5v0d10v5.pm3.spice",
-            "sky130_fd_pr__cap_mim_m3_1.model.spice",
-            "sky130_fd_pr__cap_mim_m3_2.model.spice",
-        ]
-        override_paths = [
-            Path(misc_tapeout_collateral_path)
-            / "OPEN-PDKS-Modifications"
-            / "sky130_fd_pr"
-            / "sky130_fd_pr__special_pfet_pass.pm3.spice",
-            Path(misc_tapeout_collateral_path)
-            / "OPEN-PDKS-Modifications"
-            / "sky130_fd_pr"
-            / "sky130_fd_pr__res_xhigh_po.model.spice",
-            Path(misc_tapeout_collateral_path)
-            / "OPEN-PDKS-Modifications"
-            / "sky130_fd_pr"
-            / "sky130_fd_pr__model__parasitic__res_po.model.spice",
-        ]
-        paths = [str(spice_dir / fname) for fname in spice_filenames]
-        paths.extend(str(path) for path in override_paths)
-        paths.extend(
-            [
-                str(
-                    Path(sky130a_path)
-                    / "libs.tech"
-                    / "ngspice"
-                    / "sky130_fd_pr__model__r+c.model.spice"
-                ),
-                str(
-                    Path(sky130a_path)
-                    / "libs.ref"
-                    / "sky130_fd_sc_hvl"
-                    / "spice"
-                    / "sky130_fd_sc_hvl.spice"
-                ),
-            ]
-        )
-        return paths
 
 # =============================================================================================
 # =============================================================================================
@@ -1900,39 +1822,26 @@ def write_sram_port_subckts(lef_files: List[str], out_file: str) -> List[str]:
                         macro = None
     return macros
 
-# Required for SRAM22 and the PoR since they use sky130A primitives.
+# The IO cells, the HVL cells and the PoR call sky130_fd_pr__* subckts: map them to the deck's
+# devices (see the .cdl header). The map has no sram22 bitcell devices (special_nfet_latch/pass,
+# special_pfet_*), so it supports SRAMs only as black boxes (technology.sky130.lvs_blackbox_srams).
 def pegasus_lvs_add_130a_primitives(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerLVSTool), "Add sky130A primitives only in LVS"
-    sky130a_path = ht.get_setting("technology.sky130.sky130A")
-    misc_tapeout_collateral_path = ht.get_setting(
-        "technology.sky130.misc_tapeout_collateral"
-    )
-    primitive_paths = list(
-        dict.fromkeys(
-            SKY130Tech.sky130_sram_primitive_names(
-                sky130a_path, misc_tapeout_collateral_path
-            )
-            + SKY130Tech.sky130_por_primitive_names(
-                sky130a_path, misc_tapeout_collateral_path
-            )
-        )
-    )
-    lvs_box = ""
-    for name in primitive_paths:
-        lvs_box += f"""\nschematic_path "{name}" spice;"""
+    device_map = os.path.join(os.path.dirname(__file__), "sky130_fd_pr_pegasus_lvs.cdl")
+    hvl_spice = os.path.join(ht.get_setting("technology.sky130.sky130A"),
+                             "libs.ref", "sky130_fd_sc_hvl", "spice", "sky130_fd_sc_hvl.spice")
+    lvs_box = f'\nschematic_path "{device_map}" cdl;'
+    lvs_box += f'\nschematic_path "{hvl_spice}" spice;'
+    lvs_box += "\nlvs_filter_device R (*res_generic_po) -short -source;"
+    lvs_box += "\nlvs_filter_device C (cap_mim_m3_2) -open -source;"
+    # The metal resistors (res_generic_m1..m5, 0.01 um long) only split net names: short them on
+    # both sides, as their schematic W/L have no unit.
+    lvs_box += "\nlvs_filter_device R (*res_generic_m?) -short;"
     # this is because otherwise lvs crashes with tons of stdcell-level pin mismatches
     lvs_box += """\nlvs_inconsistent_reduction_threshold -none;"""
     run_file = ht.lvs_ctl_file  # type: ignore
-    with open(run_file, "r+") as f:
-        # Match primitive SPICE file includes already present in the control file.
-        pattern = "schematic_path.*({}).*spice;\n".format(
-            "|".join(primitive_paths)
-        )
-        matcher = re.compile(pattern)
-        contents = f.read()
-        fixed_contents = contents + lvs_box
-        f.seek(0)
-        f.write(fixed_contents)
+    with open(run_file, "a") as f:
+        f.write(lvs_box)
     return True
 
 def sram22_lvs_recognize_gates_all(ht: HammerTool) -> bool:

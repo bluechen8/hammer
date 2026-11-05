@@ -1,0 +1,95 @@
+* sky130_fd_pr primitives as devices of the Cadence Pegasus LVS deck
+* (sky130_release_0.1.0/Sky130_LVS/sky130.lvs.v0.0_1.1.pvl).
+*
+* The open_pdks netlists (sky130_fd_io, sky130_fd_sc_hvl, simple_por, ...) call the devices as
+* subckts sky130_fd_pr__<device>. The open_pdks .pm3.spice files define those subckts with a
+* '__model' model name and {brace} parameters that Pegasus does not evaluate, so no schematic
+* device pairs with the layout. Here each subckt holds one device with the deck's name.
+*
+* - Ports and default parameters follow the open_pdks subckts.
+* - open_pdks gives w and l in um with no unit; the deck compares W and L in meters
+*   (as in the SCL CDL: W=760n), so scale by 1e-6.
+* - 'm' on the X call is the multiplier, and Pegasus applies it to the X call itself. The
+*   open_pdks netlists repeat it as 'mult' (or give mult=1), so the devices do not use mult.
+* - ESD FETs are plain g5v0d10v5 FETs in the deck; the __hv diffusion resistors are
+*   RES_GENERIC_ND/PD, which have no bulk pin.
+* - The deck has no device for res_generic_po (a poly connection in the layout) or for
+*   cap_mim_m3_2 (capm2): the LVS ctl filters them from the schematic (lvs_filter_device).
+
+.SUBCKT sky130_fd_pr__nfet_01v8 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b nfet_01v8 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__nfet_01v8_lvt d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b nfet_01v8_lvt W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__nfet_05v0_nvt d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b nfet_05v0_nvt W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__nfet_g5v0d10v5 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b nfet_g5v0d10v5 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__esd_nfet_g5v0d10v5 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b nfet_g5v0d10v5 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__pfet_01v8 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b pfet_01v8 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__pfet_01v8_hvt d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b pfet_01v8_hvt W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__pfet_01v8_lvt d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b pfet_01v8_lvt W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__pfet_g5v0d10v5 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b pfet_g5v0d10v5 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__esd_pfet_g5v0d10v5 d g s b w=1 l=1 mult=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 sa=0 sb=0 sd=0 area=0 perim=0 topography=0
+M0 d g s b pfet_g5v0d10v5 W=(w*1e-6) L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__res_generic_nd t1 t2 b w=1 l=1 mult=1
+R0 t1 t2 $[RES_GENERIC_ND] $W=(w*1e-6) $L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__res_generic_nd__hv t1 t2 b w=1 l=1 mult=1
+R0 t1 t2 $[RES_GENERIC_ND] $W=(w*1e-6) $L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__res_generic_pd__hv t1 t2 b w=1 l=1 mult=1
+R0 t1 t2 $[RES_GENERIC_PD] $W=(w*1e-6) $L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__res_generic_po t1 t2 w=1 l=1 mult=1
+R0 t1 t2 $[res_generic_po] $W=(w*1e-6) $L=(l*1e-6)
+.ENDS
+
+* All res_xhigh_po calls in these netlists use w=0.69.
+.SUBCKT sky130_fd_pr__res_xhigh_po r0 r1 sub w=0.69 l=1 mult=1
+R0 r0 r1 $SUB=sub $[res_xhigh_po_0p69] $W=(w*1e-6) $L=(l*1e-6)
+.ENDS
+
+.SUBCKT sky130_fd_pr__cap_mim_m3_1 c0 c1 w=1 l=1 mf=1
+C0 c0 c1 $[cap_mim_m3__base] W=(w*1e-6) L=(l*1e-6) M=mf
+.ENDS
+
+.SUBCKT sky130_fd_pr__cap_mim_m3_2 c0 c1 w=1 l=1 mf=1
+C0 c0 c1 $[cap_mim_m3_2] W=(w*1e-6) L=(l*1e-6) M=mf
+.ENDS
+
+* Anode first, as in the open_pdks subckts (D0 N P). area and perim are in pm^2 and pm there.
+.SUBCKT sky130_fd_pr__diode_pd2nw_05v5 N P area=1e12 perim=1e6
+D0 N P diode_pd2nw_05v5 (area*1e-24) (perim*1e-12)
+.ENDS
+
+.SUBCKT sky130_fd_pr__diode_pw2nd_11v0 N P area=1e12 perim=1e6
+D0 N P diode_pw2nd_11v0 (area*1e-24) (perim*1e-12)
+.ENDS
