@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import List
 
 from hammer.tech import (
+    filters,
     Corner,
     Decimal,
     DRCDeck,
     ExtraLibrary,
     HammerTechnology,
+    HammerTechnologyUtils,
     Library,
     LVSDeck,
     Metal,
@@ -1847,19 +1849,56 @@ def calibre_lvs_blackbox_srams(ht: HammerTool) -> bool:
 
 def pegasus_lvs_blackbox_srams(ht: HammerTool) -> bool:
     assert isinstance(ht, HammerLVSTool), "Blackbox and filter SRAMs only in LVS"
-    lvs_box = ''
-    for name in SKY130Tech.sky130_sram_names():
-        lvs_box += f"\nlvs_black_box {name} -gray"
+    # A black box needs only the SRAM ports, so take them from the SRAM LEFs and do not
+    # read sram22.spice: it is very large, and an install can .include files that are
+    # not on this machine (sram22_sky130_macros_exp includes a /scratch path).
+    port_file = os.path.join(ht.run_dir, "sram_blackbox_ports.spice")
+    lef_macros = write_sram_port_subckts(sram_lef_files(ht), port_file)
+    sram_names = list(dict.fromkeys(SKY130Tech.sky130_sram_names() + lef_macros))
+    lvs_box = f'\nschematic_path "{port_file}" spice;'
+    for name in sram_names:
+        lvs_box += f"\nlvs_black_box -black {name}"
     run_file = ht.lvs_ctl_file  # type: ignore
-    with open(run_file, "r+") as f:
-        # Remove SRAM SPICE file includes.
-        pattern = 'schematic_path.*({}).*spice;\n'.format('|'.join(SKY130Tech.sky130_sram_names()))
-        matcher = re.compile(pattern)
+    with open(run_file) as f:
         contents = f.read()
-        fixed_contents = matcher.sub("", contents) + lvs_box
-        f.seek(0)
-        f.write(fixed_contents)
+    # Remove SRAM SPICE file includes.
+    pattern = 'schematic_path.*({}).*spice;\n'.format('|'.join(map(re.escape, sram_names + ["sram22.spice"])))
+    with open(run_file, "w") as f:
+        f.write(re.sub(pattern, "", contents) + lvs_box)
     return True
+
+def sram_lef_files(ht: HammerTool) -> List[str]:
+    """LEF files of the SRAM macros (libraries that provide lib_type sram)."""
+    return ht.technology.read_libs(
+        [filters.lef_filter], HammerTechnologyUtils.to_plain_item,
+        extra_pre_filters=[lambda lib: any(p.lib_type == "sram" for p in (lib.provides or []))])
+
+def write_sram_port_subckts(lef_files: List[str], out_file: str) -> List[str]:
+    """Write one empty .SUBCKT per LEF macro, with its pins (bus bits as name[i]) as ports.
+    Return the macro names."""
+    macros = []
+    with open(out_file, "w") as f:
+        f.write("* SRAM ports for the LVS black boxes, from the SRAM LEFs.\n")
+        for lef in lef_files:
+            macro, pins = None, []
+            with open(lef) as lf:
+                for line in lf:
+                    tok = line.split()
+                    if len(tok) < 2:
+                        continue
+                    if tok[0] == "MACRO":
+                        macro, pins = tok[1], []
+                    elif tok[0] == "PIN" and macro:
+                        pins.append(tok[1])
+                    elif tok[0] == "END" and tok[1] == macro:
+                        if macro not in macros:
+                            macros.append(macro)
+                            f.write(f"\n.SUBCKT {macro}\n")
+                            for i in range(0, len(pins), 8):
+                                f.write("+ " + " ".join(pins[i:i + 8]) + "\n")
+                            f.write(".ENDS\n")
+                        macro = None
+    return macros
 
 # Required for SRAM22 and the PoR since they use sky130A primitives.
 def pegasus_lvs_add_130a_primitives(ht: HammerTool) -> bool:
