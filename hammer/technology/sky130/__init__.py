@@ -1799,7 +1799,38 @@ add_stripes \
     -block_ring_bottom_layer_limit met1 \
     -use_wire_group 0 \
     -snap_wire_center_to_grid none
-    
+
+# The bottom edge is the hard side of the add_stripes above (-start_offset -0.200 centres a
+# rail on it). The top edge is the soft side and a VDD/VSS set that does not fit is left out,
+# so the rail centred on the core top edge was missing: with an even row count the top row had
+# no VDD rail. Draw that rail from the top. The bottom edge rail is VDD, so the top one is VDD
+# for an even row count and VSS for an odd one.
+lassign [lindex [get_db designs .core_bbox] 0] core_x0 core_y0 core_x1 core_y1
+set core_rows [expr {round(($core_y1 - $core_y0) * 2.0 / $same_net_pitch)}]
+set top_rail_net [expr {$core_rows % 2 ? "VSS" : "VDD"}]
+puts "  core rows:        $core_rows, top-edge rail: $top_rail_net"
+
+if {abs(($core_y1 - $core_y0) * 2.0 / $same_net_pitch - $core_rows) > 1e-3} {
+    puts "WARNING: core height [expr {$core_y1 - $core_y0}] is not a whole number of [expr {$same_net_pitch / 2.0}] um rows; no top-edge rail added"
+} else {
+add_stripes \
+    -nets $top_rail_net \
+    -layer met1 \
+    -direction horizontal \
+    -start_from top \
+    -start_offset -0.200 \
+    -width $rail_width \
+    -number_of_sets 1 \
+    -switch_layer_over_obs false \
+    -max_same_layer_jog_length 2.0 \
+    -pad_core_ring_top_layer_limit met1 \
+    -pad_core_ring_bottom_layer_limit met1 \
+    -block_ring_top_layer_limit met1 \
+    -block_ring_bottom_layer_limit met1 \
+    -use_wire_group 0 \
+    -snap_wire_center_to_grid none
+}
+
 reset_db -category add_stripes
 """
     )
