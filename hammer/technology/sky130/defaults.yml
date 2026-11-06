@@ -25,6 +25,11 @@ technology.sky130:
   sky130_scl_extra_spice: []
   # Extra SPICE/CDL netlists for sky130_scl cells that ship without one (e.g. FILL_DECAP8/16),
   # added as technology libraries so Voltus PG-library generation can characterize them.
+  sky130_scl_gds_overrides: []
+  # GDS files with patched copies of sky130_scl_9T cells, merged ahead of the kit GDS. In
+  # write_stream -merge, Innovus keeps the first structure of a name and renames later copies
+  # (IMPOGDS-4001), so a cell here replaces the kit cell of the same name. LEF, Liberty and
+  # CDL still come from the kit: only use this for layout-only fixes.
 
   sram22_sky130_macros: "/path/to/sram22_sky130_macros"  # SRAM path
   # /path/to/sram22_sky130_macros
