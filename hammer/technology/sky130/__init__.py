@@ -87,6 +87,12 @@ class SKY130Tech(HammerTechnology):
                 ),
             ]
         elif slib == "sky130_scl":
+            # Patched cell GDS first: the stream-out merge keeps the first structure of a name.
+            # These libraries carry only a GDS, so LEF, Liberty and CDL still come from the kit.
+            for gds in self.get_setting("technology.sky130.sky130_scl_gds_overrides") or []:
+                if not os.path.isfile(gds):
+                    raise FileNotFoundError(f"technology.sky130.sky130_scl_gds_overrides: {gds} not found")
+                libs.append(Library(gds_file=gds, provides=[Provide(lib_type="technology")]))
             libs += [
                 Library(
                     lef_file="cache/sky130_scl_9T.tlef",

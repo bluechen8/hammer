@@ -20,6 +20,8 @@ technology.sky130:
   pegasus_drc_rules_dir: str
   # Extra SPICE/CDL netlists for sky130_scl cells without one (e.g. FILL_DECAP8/16)
   sky130_scl_extra_spice: list[str]
+  # Patched sky130_scl_9T cell GDS, merged ahead of the kit GDS (layout-only fixes)
+  sky130_scl_gds_overrides: list[str]
 
   # RAM paths
   # OpenRAM
